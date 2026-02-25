@@ -12,8 +12,8 @@ from openai import OpenAI
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
-TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")  # tua API FMP
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # chiave OpenAI per riassunti
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -52,22 +52,20 @@ def safe_request(url):
 
 def summarize_text(text: str) -> str:
     if not client:
-        return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
+        return "⚪ OPENAI_API_KEY non impostata o quota esaurita, impossibile fare riassunto."
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Riassumi in modo chiaro e professionale i punti principali di questo testo:\n\n{text}"
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": f"Riassumi in modo chiaro e professionale i punti principali di questo testo:\n\n{text}"
+            }],
             max_tokens=300
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         print("Errore riassunto GPT:", e)
-        return "⚪ Riassunto non disponibile"
+        return "⚪ Riassunto non disponibile o quota esaurita"
 
 # -----------------------------
 # Eventi Forex USD/EUR (FMP)
@@ -95,9 +93,9 @@ async def send_weekly():
 
     msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
-        ts = e.get("publishedDate", 0)  # FMP usa publishedDate
+        ts = e.get("publishedDate", 0)
         date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "Unknown"
-        msg += f"{date_str} - {e['title']}\n"
+        msg += f"{date_str} - {e.get('title')}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Weekly sent")
@@ -112,7 +110,7 @@ async def send_daily():
     for e in events:
         ts = e.get("publishedDate", 0)
         date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "Unknown"
-        msg += f"{date_str} - {e['title']}\n"
+        msg += f"{date_str} - {e.get('title')}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Daily sent")
@@ -128,13 +126,13 @@ async def check_releases():
         if news_id in notified_events:
             continue
 
-        actual = e.get("Actual")
-        forecast = e.get("Forecast")
-        previous = e.get("Previous")
+        actual = e.get("actual")
+        forecast = e.get("forecast")
+        previous = e.get("previous")
 
         if actual or forecast or previous:
             impact = "⚪ Non disponibile"
-            msg = f"""📊 {e.get("title")}
+            msg = f"""📊 {e.get('title')}
 
 Actual: {actual}
 Forecast: {forecast}
@@ -149,7 +147,7 @@ Impatto: {impact}
                 try:
                     r = requests.get(news_link, timeout=10)
                     if r.status_code == 200:
-                        transcript = r.text[:5000]
+                        transcript = r.text[:5000]  # limita dimensione
                 except Exception as ex:
                     print("Errore fetch transcript:", ex)
 
