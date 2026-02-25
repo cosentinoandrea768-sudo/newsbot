@@ -7,7 +7,6 @@ def parse_number(value):
     except:
         return None
 
-
 POSITIVE_WHEN_HIGHER = [
     "GDP",
     "CPI",
@@ -24,7 +23,6 @@ POSITIVE_WHEN_LOWER = [
     "Jobless Claims",
     "Initial Jobless Claims"
 ]
-
 
 def evaluate_impact(event_name, actual, forecast):
     actual = parse_number(actual)
