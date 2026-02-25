@@ -70,18 +70,18 @@ def summarize_text(text: str) -> str:
         return "⚪ Riassunto non disponibile"
 
 # -----------------------------
-# Eventi Forex USD/EUR FMP
+# Eventi Forex USD/EUR (FMP)
 # -----------------------------
 def get_today_events():
-    url = f"https://financialmodelingprep.com/api/v3/forex_news?apikey={TE_API_KEY}"
+    url = f"https://financialmodelingprep.com/api/v4/forex-news?apikey={TE_API_KEY}"
     events = safe_request(url)
-
     return [
         e for e in events
         if "USD" in e.get("title", "") or "EUR" in e.get("title", "")
     ]
 
 def get_week_events():
+    # FMP free non permette filtro start/end → ritorna eventi di oggi
     return get_today_events()
 
 # -----------------------------
@@ -95,7 +95,8 @@ async def send_weekly():
 
     msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
-        date_str = e.get("publishedDate", "Unknown")
+        ts = e.get("publishedDate", 0)  # FMP usa publishedDate
+        date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "Unknown"
         msg += f"{date_str} - {e['title']}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
@@ -109,7 +110,8 @@ async def send_daily():
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
-        date_str = e.get("publishedDate", "Unknown")
+        ts = e.get("publishedDate", 0)
+        date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "Unknown"
         msg += f"{date_str} - {e['title']}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
@@ -126,20 +128,33 @@ async def check_releases():
         if news_id in notified_events:
             continue
 
-        # FMP non ha Actual/Forecast/Previous, quindi assumiamo discorso
-        news_link = e.get("url")
-        transcript = ""
+        actual = e.get("Actual")
+        forecast = e.get("Forecast")
+        previous = e.get("Previous")
 
-        if news_link:
-            try:
-                r = requests.get(news_link, timeout=10)
-                if r.status_code == 200:
-                    transcript = r.text[:5000]
-            except Exception as ex:
-                print("Errore fetch transcript:", ex)
+        if actual or forecast or previous:
+            impact = "⚪ Non disponibile"
+            msg = f"""📊 {e.get("title")}
 
-        summary = summarize_text(transcript) if transcript else f"⚪ Testo non disponibile. Link: {news_link}"
-        msg = f"📢 {e.get('title')}\n\n{summary}"
+Actual: {actual}
+Forecast: {forecast}
+Previous: {previous}
+
+Impatto: {impact}
+"""
+        else:
+            news_link = e.get("url")
+            transcript = ""
+            if news_link:
+                try:
+                    r = requests.get(news_link, timeout=10)
+                    if r.status_code == 200:
+                        transcript = r.text[:5000]
+                except Exception as ex:
+                    print("Errore fetch transcript:", ex)
+
+            summary = summarize_text(transcript) if transcript else f"⚪ Testo non disponibile. Link: {news_link}"
+            msg = f"📢 {e.get('title')}\n\n{summary}"
 
         await bot.send_message(chat_id=CHAT_ID, text=msg)
         notified_events.add(news_id)
