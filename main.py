@@ -7,17 +7,24 @@ import pytz
 from telegram import Bot
 from flask import Flask
 import threading
+import openai
 
+# -----------------------------
 # Variabili ambiente
-TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")  # Usa la tua API privata se non impostata
+# -----------------------------
+TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")  # tua API privata
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # chiave OpenAI per riassunti
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
+openai.api_key = OPENAI_API_KEY
 
+# -----------------------------
 # Flask per mantenere il Web Service attivo
+# -----------------------------
 app = Flask("bot")
 
 @app.route("/")
@@ -26,8 +33,11 @@ def home():
 
 threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
-# Funzione sicura per chiamate API Finnhub/AlphaVantage/FMP
+# -----------------------------
+# Funzioni utility
+# -----------------------------
 def safe_request(url):
+    """Chiamata sicura alle API."""
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -36,22 +46,37 @@ def safe_request(url):
         print("API ERROR:", e)
         return []
 
-# Ottieni news Forex (USD/EUR) di oggi
+def summarize_text(text: str) -> str:
+    """Riassume un testo usando GPT."""
+    if not OPENAI_API_KEY:
+        return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": f"Riassumi i punti principali di questo testo:\n\n{text}"}],
+            max_tokens=300
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print("Errore riassunto GPT:", e)
+        return "⚪ Riassunto non disponibile"
+
+# -----------------------------
+# Eventi Forex USD/EUR
+# -----------------------------
 def get_today_events():
     today_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
-    # Endpoint Finnhub esempio, adattabile ad altre API
     url = f"https://finnhub.io/api/v1/news?category=forex&token={TE_API_KEY}"
     events = safe_request(url)
-    # Filtra solo news USD/EUR
     return [e for e in events if "USD" in e.get("headline","") or "EUR" in e.get("headline","")]
 
-# Ottieni news Forex della settimana
 def get_week_events():
-    events = get_today_events()  # Finnhub non permette filtro start/end nella free key
-    # In alternativa potresti salvare eventi giornalieri in locale e aggregarli
-    return events
+    # Finnhub free non permette filtro start/end → ritorna eventi di oggi
+    return get_today_events()
 
-# Messaggi weekly/daily async
+# -----------------------------
+# Messaggi daily/weekly
+# -----------------------------
 async def send_weekly():
     events = get_week_events()
     if not events:
@@ -60,7 +85,8 @@ async def send_weekly():
 
     msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
-        date_str = datetime.fromtimestamp(e.get("datetime",0)).strftime("%Y-%m-%d %H:%M")
+        ts = e.get("datetime", 0)
+        date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "Unknown"
         msg += f"{date_str} - {e['headline']}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
@@ -74,33 +100,64 @@ async def send_daily():
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
-        date_str = datetime.fromtimestamp(e.get("datetime",0)).strftime("%Y-%m-%d %H:%M")
+        ts = e.get("datetime", 0)
+        date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "Unknown"
         msg += f"{date_str} - {e['headline']}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Daily sent")
 
-# Notifiche quando escono nuove news
+# -----------------------------
+# Controllo news e discorsi
+# -----------------------------
 async def check_releases():
     events = get_today_events()
 
     for e in events:
-        news_id = e.get("id") or e.get("datetime")  # usa id unico se disponibile
-        if news_id not in notified_events:
+        news_id = e.get("id") or e.get("datetime")
+        if news_id in notified_events:
+            continue
+
+        actual = e.get("Actual")
+        forecast = e.get("Forecast")
+        previous = e.get("Previous")
+
+        # Se ci sono dati numerici → calcola impatto
+        if actual or forecast or previous:
+            impact = f"⚪ Non disponibile"  # Puoi integrare evaluate_impact se vuoi
             msg = f"""📊 {e.get("headline")}
 
-Link: {e.get("url")}
-"""
-            await bot.send_message(chat_id=CHAT_ID, text=msg)
-            notified_events.add(news_id)
-            print("Release sent:", e.get("headline"))
+Actual: {actual}
+Forecast: {forecast}
+Previous: {previous}
 
+Impatto: {impact}
+"""
+        # Se non ci sono dati → assume sia un discorso
+        else:
+            news_link = e.get("url")
+            transcript = ""
+            if news_link:
+                try:
+                    r = requests.get(news_link, timeout=10)
+                    if r.status_code == 200:
+                        transcript = r.text
+                except Exception as ex:
+                    print("Errore fetch transcript:", ex)
+
+            summary = summarize_text(transcript) if transcript else f"⚪ Testo non disponibile. Link: {news_link}"
+            msg = f"📢 {e.get('headline')}\n\n{summary}"
+
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        notified_events.add(news_id)
+        print("Release sent:", e.get("headline"))
+
+# -----------------------------
 # Loop principale async
+# -----------------------------
 async def main_loop():
-    # Messaggio di startup
     await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot avviato e pronto a inviare notifiche!")
 
-    # Scheduler daily/weekly
     schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
     schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
@@ -111,5 +168,8 @@ async def main_loop():
         schedule.run_pending()
         await asyncio.sleep(30)
 
-# Avvio
-asyncio.run(main_loop())
+# -----------------------------
+# Avvio bot
+# -----------------------------
+if __name__ == "__main__":
+    asyncio.run(main_loop())
