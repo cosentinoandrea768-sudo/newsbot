@@ -1,20 +1,5 @@
-# Telegram bot
-python-telegram-bot>=20.3
-
-# HTTP requests
+python-telegram-bot==13.15
 requests
-
-# Scheduling tasks
 schedule
-
-# Timezone handling
 pytz
-
-# Web server per keep-alive
 flask
-
-# Parsing HTML
-beautifulsoup4
-
-# Automazione browser per scraping Forex Factory
-selenium
