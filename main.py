@@ -15,10 +15,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key
 
-application = ApplicationBuilder().token(BOT_TOKEN).build()
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
 weekly_score = {"USD": 0, "EUR": 0}
+
+# -----------------------------
+# Bot Telegram
+# -----------------------------
+application = ApplicationBuilder().token(BOT_TOKEN).build()
 
 # -----------------------------
 # Flask keep-alive
@@ -29,8 +33,12 @@ app = Flask("bot")
 def home():
     return "🤖 Bot economico attivo!"
 
+# Avvia Flask su porta assegnata da Render
 import threading
-threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
+threading.Thread(
+    target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
+    daemon=True
+).start()
 
 # -----------------------------
 # Fetch eventi via API
@@ -42,7 +50,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # Cambia in Eurozone per EUR
+    payload = {"country": "USA"}  # Usa "EUR" o "Eurozone" per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -77,12 +85,10 @@ async def send_daily():
     events = fetch_events()
     if not events:
         return
-
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
         date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
         msg += f"{date_str} - {e['headline']}\n"
-
     await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
 async def send_weekly():
@@ -90,7 +96,6 @@ async def send_weekly():
     for currency, score in weekly_score.items():
         bias = "🟢 Rialzista" if score > 0 else "🔴 Ribassista" if score < 0 else "⚪ Neutro"
         msg += f"{currency}: {score} → {bias}\n"
-
     await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     weekly_score["USD"] = 0
     weekly_score["EUR"] = 0
@@ -119,27 +124,27 @@ async def check_releases():
             f"Surprise: {round(surprise,2)}%\n\n"
             f"Impact: {impact_label}"
         )
-
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
         notified_events.add(news_id)
 
 # -----------------------------
-# Loop principale async
+# Scheduler async
 # -----------------------------
-async def main_loop():
-    await application.bot.send_message(chat_id=CHAT_ID, text="🤖 Bot economico avviato!")
-
+async def scheduler_loop():
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
     schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
     schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
-    print("Bot avviato e pronto...")
     while True:
         schedule.run_pending()
         await asyncio.sleep(30)
 
 # -----------------------------
-# Avvio
+# Avvio bot
 # -----------------------------
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    # Avvia scheduler in background
+    application.job_queue.run_once(lambda ctx: asyncio.create_task(scheduler_loop()), when=0)
+    
+    # Avvia bot Telegram e blocca thread principale
+    application.run_polling()
