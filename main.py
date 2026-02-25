@@ -172,4 +172,43 @@ async def main_loop():
 # Avvio bot
 # -----------------------------
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    asyncio.run(manual_test())
+
+# -----------------------------
+# FUNZIONE TEST MANUALE
+# -----------------------------
+async def manual_test():
+    print("=== TEST AVVIATO ===")
+
+    # Test 1: Messaggio semplice Telegram
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
+    print("Test Telegram inviato")
+
+    # Test 2: News API
+    events = get_today_events()
+    print(f"News trovate: {len(events)}")
+
+    if events:
+        first = events[0]
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"📰 Test News:\n{first.get('headline')}"
+        )
+        print("Test News inviato")
+
+    # Test 3: Riassunto GPT
+    test_text = """
+    The Federal Reserve decided to keep interest rates unchanged.
+    Chair Powell said inflation is still above target and further tightening
+    could be considered if necessary.
+    """
+
+    summary = summarize_text(test_text)
+
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"🤖 Test Riassunto GPT:\n\n{summary}"
+    )
+    print("Test GPT inviato")
+
+    print("=== TEST COMPLETATO ===")
