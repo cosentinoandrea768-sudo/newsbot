@@ -3,4 +3,5 @@ requests
 schedule
 pytz
 flask
+beautifulsoup4
 openai
