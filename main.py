@@ -1,34 +1,33 @@
 import os
 import asyncio
 import schedule
+import requests
 from datetime import datetime
 import pytz
 from telegram import Bot
 from flask import Flask
 import threading
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from impact_logic import evaluate_impact
+from impact_logic import evaluate_impact, calculate_surprise
 
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
+API_KEY = os.getenv("RAPIDAPI_KEY")  # nuova chiave API
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
+weekly_score = {"USD": 0, "EUR": 0}
 
 # -----------------------------
-# Flask per mantenere il Web Service attivo
+# Flask per keep-alive
 # -----------------------------
 app = Flask("bot")
 
 @app.route("/")
 def home():
-    return "🤖 Bot attivo!"
+    return "🤖 Bot economico attivo!"
 
 threading.Thread(
     target=lambda: app.run(host="0.0.0.0", port=10000),
@@ -36,137 +35,115 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Funzione scraping Forex Factory con Selenium
+# Funzione fetch events
 # -----------------------------
-def get_today_events():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.get("https://www.forexfactory.com/calendar?week=this")
-
-    events = []
+def fetch_events():
+    url = "https://trader-calendar.p.rapidapi.com/api/calendar"
+    headers = {
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
+        "Content-Type": "application/json"
+    }
+    payload = {"country": "USA"}  # puoi cambiare in "Eurozone" per EUR
 
     try:
-        # Attendi che la tabella sia visibile
-        driver.implicitly_wait(5)
-        rows = driver.find_elements(By.CSS_SELECTOR, "tr.calendar__row.calendar__row--impact--3")
-        for row in rows:
-            currency = row.get_attribute("data-currency")
-            if currency not in ["USD", "EUR"]:
-                continue
-            headline_el = row.find_element(By.CSS_SELECTOR, ".calendar__event")
-            headline = headline_el.text.strip()
-
-            actual = row.get_attribute("data-actual")
-            forecast = row.get_attribute("data-forecast")
-            previous = row.get_attribute("data-previous")
-            ts = row.get_attribute("data-timestamp")
-
-            events.append({
-                "currency": currency,
-                "headline": headline,
-                "actual": actual,
-                "forecast": forecast,
-                "previous": previous,
-                "datetime": int(ts) if ts else int(datetime.now(TIMEZONE).timestamp())
-            })
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        data = response.json()
     except Exception as e:
-        print("Errore scraping Forex Factory:", e)
-    finally:
-        driver.quit()
+        print("Errore API:", e)
+        return []
 
+    events = []
+    for item in data:
+        currency = item.get("currency")
+        if currency not in ["USD", "EUR"]:
+            continue
+        if item.get("impact") != "High":
+            continue
+
+        ts = int(datetime.now(TIMEZONE).timestamp())
+        events.append({
+            "id": item.get("id", f"{item.get('event')}_{ts}"),
+            "currency": currency,
+            "headline": item.get("event"),
+            "actual": item.get("actual"),
+            "forecast": item.get("forecast"),
+            "previous": item.get("previous"),
+            "datetime": ts
+        })
     return events
-
-def get_week_events():
-    return get_today_events()
 
 # -----------------------------
 # Messaggi daily/weekly
 # -----------------------------
-async def send_weekly():
-    events = get_week_events()
-    if not events:
-        print("No weekly events")
-        return
-    msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
-    for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
-        msg += f"{date_str} - {e['headline']}\n"
-    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-    print("Weekly sent")
-
 async def send_daily():
-    events = get_today_events()
+    events = fetch_events()
     if not events:
-        print("No daily events")
         return
+
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
         date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
         msg += f"{date_str} - {e['headline']}\n"
+
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-    print("Daily sent")
+
+async def send_weekly():
+    msg = "📊 *Weekly Bias Report*\n\n"
+    for currency, score in weekly_score.items():
+        bias = "🟢 Rialzista" if score > 0 else "🔴 Ribassista" if score < 0 else "⚪ Neutro"
+        msg += f"{currency}: {score} → {bias}\n"
+
+    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+    # Reset settimanale
+    weekly_score["USD"] = 0
+    weekly_score["EUR"] = 0
 
 # -----------------------------
 # Controllo news e impatto
 # -----------------------------
 async def check_releases():
-    events = get_today_events()
+    events = fetch_events()
     for e in events:
-        news_id = f"{e['headline']}_{e['datetime']}"
+        news_id = e["id"]
         if news_id in notified_events:
             continue
 
         actual = e.get("actual")
         forecast = e.get("forecast")
-        previous = e.get("previous")
+        impact_label, score = evaluate_impact(e["headline"], actual, forecast)
+        surprise = calculate_surprise(actual, forecast)
 
-        impact = evaluate_impact(e["headline"], actual, forecast)
+        weekly_score[e["currency"]] += score
+
         msg = (
-            f"📊 {e['headline']}\n\n"
-            f"Actual: {actual or '⚪ Non disponibile'}\n"
-            f"Forecast: {forecast or '⚪ Non disponibile'}\n"
-            f"Previous: {previous or '⚪ Non disponibile'}\n\n"
-            f"Impatto: {impact}"
+            f"📊 *{e['headline']}* ({e['currency']})\n\n"
+            f"Actual: {actual or 'N/D'}\n"
+            f"Forecast: {forecast or 'N/D'}\n"
+            f"Surprise: {round(surprise,2)}%\n\n"
+            f"Impact: {impact_label}"
         )
 
-        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
         notified_events.add(news_id)
-        print("Release sent:", e["headline"])
 
 # -----------------------------
 # Loop principale async
 # -----------------------------
 async def main_loop():
-    await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot avviato e pronto a inviare notifiche!")
+    await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot economico avviato!")
 
-    schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
+    schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
     schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
-    print("Bot started...")
-
+    print("Bot avviato e pronto...")
     while True:
         schedule.run_pending()
         await asyncio.sleep(30)
 
 # -----------------------------
-# FUNZIONE TEST MANUALE
-# -----------------------------
-async def manual_test():
-    print("=== TEST AVVIATO ===")
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
-    events = get_today_events()
-    print(f"News trovate: {len(events)}")
-    for e in events:
-        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{e['headline']}")
-    print("=== TEST COMPLETATO ===")
-
-# -----------------------------
 # Avvio bot
 # -----------------------------
 if __name__ == "__main__":
-    asyncio.run(manual_test())
+    asyncio.run(main_loop())
