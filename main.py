@@ -2,7 +2,7 @@ import os
 import requests
 import asyncio
 import schedule
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from telegram import Bot
 from flask import Flask
@@ -41,8 +41,13 @@ threading.Thread(
 # Funzioni utility
 # -----------------------------
 def safe_request(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/117.0.0.0 Safari/537.36"
+    }
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=10, headers=headers)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -79,8 +84,10 @@ def get_today_events():
         currency = row.get("data-currency")
         if currency not in ["USD", "EUR"]:
             continue
-        headline = row.select_one(".calendar__event").get_text(strip=True)
-        # valori simulati; Forex Factory non fornisce numeri direttamente via scraping
+        headline_tag = row.select_one(".calendar__event")
+        if not headline_tag:
+            continue
+        headline = headline_tag.get_text(strip=True)
         actual = row.get("data-actual")
         forecast = row.get("data-forecast")
         previous = row.get("data-previous")
@@ -139,7 +146,6 @@ async def check_releases():
         forecast = e.get("forecast")
         previous = e.get("previous")
 
-        # Se ci sono valori numerici → calcola impatto
         if actual or forecast or previous:
             impact = evaluate_impact(e["headline"], actual, forecast)
             msg = f"""📊 {e['headline']}
@@ -150,7 +156,6 @@ Previous: {previous or '⚪ Non disponibile'}
 
 Impatto: {impact}
 """
-        # Altrimenti genera riassunto GPT
         else:
             summary = summarize_text(e["headline"])
             msg = f"📢 {e['headline']}\n\n{summary}"
@@ -170,7 +175,6 @@ async def main_loop():
     schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
     print("Bot started...")
-
     while True:
         schedule.run_pending()
         await asyncio.sleep(30)
@@ -181,11 +185,13 @@ async def main_loop():
 async def manual_test():
     print("=== TEST AVVIATO ===")
     await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
+
     events = get_today_events()
     print(f"News trovate: {len(events)}")
     if events:
         first = events[0]
         await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{first['headline']}")
+
     test_text = "The Federal Reserve decided to keep interest rates unchanged. Chair Powell said inflation remains elevated."
     summary = summarize_text(test_text)
     await bot.send_message(chat_id=CHAT_ID, text=f"🤖 Test Riassunto GPT:\n\n{summary}")
