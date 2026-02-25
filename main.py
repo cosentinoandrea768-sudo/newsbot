@@ -13,16 +13,21 @@ from openai import OpenAI
 # Variabili ambiente
 # -----------------------------
 TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Metti la tua qui su Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("⚠️ BOT_TOKEN o CHAT_ID non impostati nelle variabili ambiente!")
 
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
 
-# Client OpenAI nuovo
+# Client OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+if not client:
+    print("⚠️ OPENAI_API_KEY non impostata! Riassunti GPT non funzioneranno.")
 
 # -----------------------------
 # Flask per mantenere il Web Service attivo
@@ -33,10 +38,7 @@ app = Flask("bot")
 def home():
     return "🤖 Bot attivo!"
 
-threading.Thread(
-    target=lambda: app.run(host="0.0.0.0", port=10000),
-    daemon=True
-).start()
+threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
 # -----------------------------
 # Funzioni utility
@@ -51,11 +53,12 @@ def safe_request(url):
         return []
 
 def summarize_text(text: str) -> str:
+    """Riassume un testo usando GPT"""
     if not client:
         return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # fallback a modello meno costoso per evitare 429
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "user",
@@ -70,7 +73,7 @@ def summarize_text(text: str) -> str:
         return "⚪ Riassunto non disponibile"
 
 # -----------------------------
-# Eventi Forex USD/EUR
+# Eventi Forex USD/EUR (FMP)
 # -----------------------------
 def get_today_events():
     url = f"https://financialmodelingprep.com/api/v3/forex_news?apikey={TE_API_KEY}"
@@ -81,7 +84,6 @@ def get_today_events():
     ]
 
 def get_week_events():
-    # FMP free non permette filtro start/end → ritorna eventi di oggi
     return get_today_events()
 
 # -----------------------------
@@ -96,7 +98,7 @@ async def send_weekly():
     msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
         date_str = e.get("publishedDate", "Unknown")
-        msg += f"{date_str} - {e.get('title','')}\n"
+        msg += f"{date_str} - {e.get('title')}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Weekly sent")
@@ -110,7 +112,7 @@ async def send_daily():
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
         date_str = e.get("publishedDate", "Unknown")
-        msg += f"{date_str} - {e.get('title','')}\n"
+        msg += f"{date_str} - {e.get('title')}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Daily sent")
@@ -126,7 +128,7 @@ async def check_releases():
         if news_id in notified_events:
             continue
 
-        # Qui FMP non fornisce actual/forecast/previous → considera sempre discorso/news
+        # Se non ci sono dati numerici → assume sia un discorso
         news_link = e.get("url")
         transcript = ""
 
@@ -134,7 +136,7 @@ async def check_releases():
             try:
                 r = requests.get(news_link, timeout=10)
                 if r.status_code == 200:
-                    transcript = r.text[:5000]
+                    transcript = r.text[:5000]  # massimo 5000 caratteri
             except Exception as ex:
                 print("Errore fetch transcript:", ex)
 
@@ -177,7 +179,7 @@ async def manual_test():
         first = events[0]
         await bot.send_message(
             chat_id=CHAT_ID,
-            text=f"📰 Test News:\n{first.get('title','')}"
+            text=f"📰 Test News:\n{first.get('title')}"
         )
         print("Test News inviato")
 
@@ -187,7 +189,6 @@ async def manual_test():
     """
 
     summary = summarize_text(test_text)
-
     await bot.send_message(
         chat_id=CHAT_ID,
         text=f"🤖 Test Riassunto GPT:\n\n{summary}"
