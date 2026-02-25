@@ -2,32 +2,29 @@ import os
 import requests
 import asyncio
 import schedule
+from datetime import datetime, timedelta
 import pytz
-from datetime import datetime
 from telegram import Bot
 from flask import Flask
 import threading
 from bs4 import BeautifulSoup
 from openai import OpenAI
+from impact_logic import evaluate_impact
 
 # -----------------------------
-# VARIABILI AMBIENTE
+# Variabili ambiente
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("BOT_TOKEN o CHAT_ID mancanti!")
-
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
-
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # -----------------------------
-# FLASK KEEP ALIVE
+# Flask per mantenere il Web Service attivo
 # -----------------------------
 app = Flask("bot")
 
@@ -41,93 +38,161 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# SCRAPING FOREX FACTORY
+# Funzioni utility
 # -----------------------------
-def scrape_forex_factory():
-    url = "https://www.forexfactory.com/calendar"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
+def safe_request(url):
     try:
-        r = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(r.text, "html.parser")
-        events = []
-
-        rows = soup.find_all("tr", class_="calendar__row")
-        for row in rows:
-            currency = row.find("td", class_="calendar__currency")
-            impact = row.find("td", class_="calendar__impact")
-            title = row.find("td", class_="calendar__event")
-
-            if not currency or not impact or not title:
-                continue
-
-            currency_text = currency.text.strip()
-            impact_icons = impact.find_all("span", class_="high")
-
-            if currency_text not in ["USD", "EUR"]:
-                continue
-
-            if len(impact_icons) < 3:
-                continue
-
-            events.append({
-                "id": title.text.strip(),
-                "currency": currency_text,
-                "title": title.text.strip()
-            })
-
-        return events
-
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.text
     except Exception as e:
-        print("Errore scraping:", e)
-        return []
+        print("API ERROR:", e)
+        return ""
 
-# -----------------------------
-# OPENAI RIASSUNTO
-# -----------------------------
-def summarize_text(text):
+def summarize_text(text: str) -> str:
     if not client:
-        return "OPENAI_API_KEY non impostata."
+        return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": f"Riassumi in modo chiaro e professionale:\n\n{text}"}],
+            messages=[{"role": "user",
+                       "content": f"Riassumi in modo chiaro e professionale i punti principali di questo testo:\n\n{text}"}],
             max_tokens=300
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print("Errore OpenAI:", e)
-        return "Riassunto non disponibile."
+        print("Errore riassunto GPT:", e)
+        return "⚪ Riassunto non disponibile"
 
 # -----------------------------
-# CHECK EVENTI
+# Scraping Forex Factory
 # -----------------------------
-async def check_events():
-    events = scrape_forex_factory()
-    print(f"Eventi trovati: {len(events)}")
-    for event in events:
-        if event["id"] in notified_events:
+def get_today_events():
+    url = "https://www.forexfactory.com/calendar.php?week=this"
+    html = safe_request(url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    events = []
+    # Prende solo le righe della tabella calendar con high impact
+    rows = soup.select("tr.calendar__row.calendar__row--impact--3")
+    for row in rows:
+        currency = row.get("data-currency")
+        if currency not in ["USD", "EUR"]:
+            continue
+        headline = row.select_one(".calendar__event").get_text(strip=True)
+        # valori simulati; Forex Factory non fornisce numeri direttamente via scraping
+        actual = row.get("data-actual")
+        forecast = row.get("data-forecast")
+        previous = row.get("data-previous")
+        ts = row.get("data-timestamp")
+        events.append({
+            "currency": currency,
+            "headline": headline,
+            "actual": actual,
+            "forecast": forecast,
+            "previous": previous,
+            "datetime": int(ts) if ts else int(datetime.now(TIMEZONE).timestamp())
+        })
+    return events
+
+def get_week_events():
+    return get_today_events()
+
+# -----------------------------
+# Messaggi daily/weekly
+# -----------------------------
+async def send_weekly():
+    events = get_week_events()
+    if not events:
+        print("No weekly events")
+        return
+    msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
+    for e in events:
+        date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
+        msg += f"{date_str} - {e['headline']}\n"
+    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+    print("Weekly sent")
+
+async def send_daily():
+    events = get_today_events()
+    if not events:
+        print("No daily events")
+        return
+    msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
+    for e in events:
+        date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
+        msg += f"{date_str} - {e['headline']}\n"
+    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+    print("Daily sent")
+
+# -----------------------------
+# Controllo news e riassunto
+# -----------------------------
+async def check_releases():
+    events = get_today_events()
+    for e in events:
+        news_id = f"{e['headline']}_{e['datetime']}"
+        if news_id in notified_events:
             continue
 
-        message = f"📅 High Impact {event['currency']}\n\n📢 {event['title']}"
-        await bot.send_message(chat_id=CHAT_ID, text=message)
-        notified_events.add(event["id"])
-        print("Inviato:", event["title"])
+        actual = e.get("actual")
+        forecast = e.get("forecast")
+        previous = e.get("previous")
+
+        # Se ci sono valori numerici → calcola impatto
+        if actual or forecast or previous:
+            impact = evaluate_impact(e["headline"], actual, forecast)
+            msg = f"""📊 {e['headline']}
+
+Actual: {actual or '⚪ Non disponibile'}
+Forecast: {forecast or '⚪ Non disponibile'}
+Previous: {previous or '⚪ Non disponibile'}
+
+Impatto: {impact}
+"""
+        # Altrimenti genera riassunto GPT
+        else:
+            summary = summarize_text(e["headline"])
+            msg = f"📢 {e['headline']}\n\n{summary}"
+
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        notified_events.add(news_id)
+        print("Release sent:", e["headline"])
 
 # -----------------------------
-# LOOP PRINCIPALE
+# Loop principale async
 # -----------------------------
 async def main_loop():
-    await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot Forex attivo (Scraping ForexFactory)")
+    await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot avviato e pronto a inviare notifiche!")
 
-    schedule.every(5).minutes.do(lambda: asyncio.create_task(check_events()))
+    schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
+    schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
+    schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
+
+    print("Bot started...")
 
     while True:
         schedule.run_pending()
         await asyncio.sleep(30)
 
 # -----------------------------
-# AVVIO
+# FUNZIONE TEST MANUALE
+# -----------------------------
+async def manual_test():
+    print("=== TEST AVVIATO ===")
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
+    events = get_today_events()
+    print(f"News trovate: {len(events)}")
+    if events:
+        first = events[0]
+        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{first['headline']}")
+    test_text = "The Federal Reserve decided to keep interest rates unchanged. Chair Powell said inflation remains elevated."
+    summary = summarize_text(test_text)
+    await bot.send_message(chat_id=CHAT_ID, text=f"🤖 Test Riassunto GPT:\n\n{summary}")
+    print("=== TEST COMPLETATO ===")
+
+# -----------------------------
+# Avvio bot
 # -----------------------------
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    asyncio.run(manual_test())
