@@ -4,24 +4,24 @@ import schedule
 import requests
 from datetime import datetime
 import pytz
-from telegram import Bot
 from flask import Flask
-import threading
 from impact_logic import evaluate_impact, calculate_surprise
+from telegram.ext import ApplicationBuilder
 
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = os.getenv("RAPIDAPI_KEY")  # nuova chiave API
-bot = Bot(token=BOT_TOKEN)
+API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key
+
+application = ApplicationBuilder().token(BOT_TOKEN).build()
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
 weekly_score = {"USD": 0, "EUR": 0}
 
 # -----------------------------
-# Flask per keep-alive
+# Flask keep-alive
 # -----------------------------
 app = Flask("bot")
 
@@ -29,13 +29,11 @@ app = Flask("bot")
 def home():
     return "🤖 Bot economico attivo!"
 
-threading.Thread(
-    target=lambda: app.run(host="0.0.0.0", port=10000),
-    daemon=True
-).start()
+import threading
+threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
 # -----------------------------
-# Funzione fetch events
+# Fetch eventi via API
 # -----------------------------
 def fetch_events():
     url = "https://trader-calendar.p.rapidapi.com/api/calendar"
@@ -44,7 +42,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # puoi cambiare in "Eurozone" per EUR
+    payload = {"country": "USA"}  # Cambia in Eurozone per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -60,7 +58,6 @@ def fetch_events():
             continue
         if item.get("impact") != "High":
             continue
-
         ts = int(datetime.now(TIMEZONE).timestamp())
         events.append({
             "id": item.get("id", f"{item.get('event')}_{ts}"),
@@ -74,7 +71,7 @@ def fetch_events():
     return events
 
 # -----------------------------
-# Messaggi daily/weekly
+# Messaggi daily / weekly
 # -----------------------------
 async def send_daily():
     events = fetch_events()
@@ -86,7 +83,7 @@ async def send_daily():
         date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
         msg += f"{date_str} - {e['headline']}\n"
 
-    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
 async def send_weekly():
     msg = "📊 *Weekly Bias Report*\n\n"
@@ -94,13 +91,12 @@ async def send_weekly():
         bias = "🟢 Rialzista" if score > 0 else "🔴 Ribassista" if score < 0 else "⚪ Neutro"
         msg += f"{currency}: {score} → {bias}\n"
 
-    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-    # Reset settimanale
+    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     weekly_score["USD"] = 0
     weekly_score["EUR"] = 0
 
 # -----------------------------
-# Controllo news e impatto
+# Controllo news / impatto
 # -----------------------------
 async def check_releases():
     events = fetch_events()
@@ -124,14 +120,14 @@ async def check_releases():
             f"Impact: {impact_label}"
         )
 
-        await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
         notified_events.add(news_id)
 
 # -----------------------------
 # Loop principale async
 # -----------------------------
 async def main_loop():
-    await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot economico avviato!")
+    await application.bot.send_message(chat_id=CHAT_ID, text="🤖 Bot economico avviato!")
 
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
     schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
@@ -143,7 +139,7 @@ async def main_loop():
         await asyncio.sleep(30)
 
 # -----------------------------
-# Avvio bot
+# Avvio
 # -----------------------------
 if __name__ == "__main__":
     asyncio.run(main_loop())
