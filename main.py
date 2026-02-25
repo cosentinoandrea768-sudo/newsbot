@@ -12,22 +12,17 @@ from openai import OpenAI
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
-TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Metti la tua qui su Render
+TE_API_KEY = os.getenv("TE_API_KEY")  # Chiave FMP
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Chiave OpenAI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("⚠️ BOT_TOKEN o CHAT_ID non impostati nelle variabili ambiente!")
 
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
 
-# Client OpenAI
+# Client OpenAI nuovo
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-if not client:
-    print("⚠️ OPENAI_API_KEY non impostata! Riassunti GPT non funzioneranno.")
 
 # -----------------------------
 # Flask per mantenere il Web Service attivo
@@ -38,12 +33,16 @@ app = Flask("bot")
 def home():
     return "🤖 Bot attivo!"
 
-threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
+threading.Thread(
+    target=lambda: app.run(host="0.0.0.0", port=10000),
+    daemon=True
+).start()
 
 # -----------------------------
 # Funzioni utility
 # -----------------------------
 def safe_request(url):
+    """Chiamata sicura alle API."""
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -53,7 +52,7 @@ def safe_request(url):
         return []
 
 def summarize_text(text: str) -> str:
-    """Riassume un testo usando GPT"""
+    """Riassume un testo usando GPT."""
     if not client:
         return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
     try:
@@ -73,7 +72,19 @@ def summarize_text(text: str) -> str:
         return "⚪ Riassunto non disponibile"
 
 # -----------------------------
-# Eventi Forex USD/EUR (FMP)
+# Controllo chiave FMP
+# -----------------------------
+def check_fmp_key():
+    test_url = f"https://financialmodelingprep.com/api/v3/forex_news?apikey={TE_API_KEY}"
+    r = requests.get(test_url)
+    if r.status_code != 200:
+        print(f"⚠️ FMP API Key non valida o errore API: {r.status_code}")
+        return False
+    print("✅ FMP API Key valida")
+    return True
+
+# -----------------------------
+# Eventi Forex USD/EUR
 # -----------------------------
 def get_today_events():
     url = f"https://financialmodelingprep.com/api/v3/forex_news?apikey={TE_API_KEY}"
@@ -84,6 +95,7 @@ def get_today_events():
     ]
 
 def get_week_events():
+    # FMP free non permette filtro start/end → ritorna eventi odierni
     return get_today_events()
 
 # -----------------------------
@@ -98,7 +110,7 @@ async def send_weekly():
     msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
         date_str = e.get("publishedDate", "Unknown")
-        msg += f"{date_str} - {e.get('title')}\n"
+        msg += f"{date_str} - {e['title']}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Weekly sent")
@@ -112,7 +124,7 @@ async def send_daily():
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
         date_str = e.get("publishedDate", "Unknown")
-        msg += f"{date_str} - {e.get('title')}\n"
+        msg += f"{date_str} - {e['title']}\n"
 
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
     print("Daily sent")
@@ -128,20 +140,36 @@ async def check_releases():
         if news_id in notified_events:
             continue
 
-        # Se non ci sono dati numerici → assume sia un discorso
-        news_link = e.get("url")
-        transcript = ""
+        # Se ci sono dati numerici → impatto
+        actual = e.get("actual")
+        forecast = e.get("forecast")
+        previous = e.get("previous")
 
-        if news_link:
-            try:
-                r = requests.get(news_link, timeout=10)
-                if r.status_code == 200:
-                    transcript = r.text[:5000]  # massimo 5000 caratteri
-            except Exception as ex:
-                print("Errore fetch transcript:", ex)
+        if actual or forecast or previous:
+            impact = "⚪ Non disponibile"
+            msg = f"""📊 {e.get("title")}
 
-        summary = summarize_text(transcript) if transcript else f"⚪ Testo non disponibile. Link: {news_link}"
-        msg = f"📢 {e.get('title')}\n\n{summary}"
+Actual: {actual}
+Forecast: {forecast}
+Previous: {previous}
+
+Impatto: {impact}
+"""
+        # Se non ci sono dati → assume sia un discorso/news da riassumere
+        else:
+            news_link = e.get("url")
+            transcript = ""
+
+            if news_link:
+                try:
+                    r = requests.get(news_link, timeout=10)
+                    if r.status_code == 200:
+                        transcript = r.text[:5000]
+                except Exception as ex:
+                    print("Errore fetch transcript:", ex)
+
+            summary = summarize_text(transcript) if transcript else f"⚪ Testo non disponibile. Link: {news_link}"
+            msg = f"📢 {e.get('title')}\n\n{summary}"
 
         await bot.send_message(chat_id=CHAT_ID, text=msg)
         notified_events.add(news_id)
@@ -151,6 +179,10 @@ async def check_releases():
 # Loop principale async
 # -----------------------------
 async def main_loop():
+    if not check_fmp_key():
+        await bot.send_message(chat_id=CHAT_ID, text="⚠️ FMP API Key non valida, bot fermo!")
+        return
+
     await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot avviato e pronto a inviare notifiche!")
 
     schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
@@ -168,32 +200,15 @@ async def main_loop():
 # -----------------------------
 async def manual_test():
     print("=== TEST AVVIATO ===")
-
     await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
-    print("Test Telegram inviato")
-
     events = get_today_events()
     print(f"News trovate: {len(events)}")
-
     if events:
         first = events[0]
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"📰 Test News:\n{first.get('title')}"
-        )
-        print("Test News inviato")
-
-    test_text = """
-    The Federal Reserve decided to keep interest rates unchanged.
-    Chair Powell said inflation remains elevated and further tightening could be considered.
-    """
-
+        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{first.get('title')}")
+    test_text = "The Federal Reserve decided to keep interest rates unchanged. Chair Powell said inflation remains elevated."
     summary = summarize_text(test_text)
-    await bot.send_message(
-        chat_id=CHAT_ID,
-        text=f"🤖 Test Riassunto GPT:\n\n{summary}"
-    )
-
+    await bot.send_message(chat_id=CHAT_ID, text=f"🤖 Test Riassunto GPT:\n\n{summary}")
     print("=== TEST COMPLETATO ===")
 
 # -----------------------------
