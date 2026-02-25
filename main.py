@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz
 from flask import Flask
 from impact_logic import evaluate_impact, calculate_surprise
-from telegram.ext import ApplicationBuilder, ContextTypes
+from telegram.ext import ApplicationBuilder
 
 # -----------------------------
 # Variabili ambiente
@@ -49,7 +49,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # Cambia in Eurozone per EUR
+    payload = {"country": "USA"}  # Usa "EUR" o "Eurozone" per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -139,15 +139,13 @@ async def scheduler_loop():
         await asyncio.sleep(30)
 
 # -----------------------------
-# Avvio bot
+# Avvio bot + scheduler
 # -----------------------------
-async def on_startup(app):
-    # Avvia scheduler quando il bot è pronto
+async def main():
+    # Avvia scheduler in background
     asyncio.create_task(scheduler_loop())
+    # Avvia il bot Telegram (blocca il thread principale)
+    await application.run_polling()
 
 if __name__ == "__main__":
-    # Aggiunge callback di startup
-    application.post_init = on_startup
-
-    # Avvia bot Telegram (blocca il thread principale)
-    application.run_polling()
+    asyncio.run(main())
