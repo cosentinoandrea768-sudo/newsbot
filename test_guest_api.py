@@ -1,9 +1,9 @@
-import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-TE_API_KEY = os.getenv("TE_API_KEY")
+# Chiave pubblica TE
+TE_API_KEY = "guest:guest"
 BASE_URL = "https://api.tradingeconomics.com/calendar"
 TIMEZONE = pytz.timezone("Europe/Rome")
 
@@ -23,8 +23,9 @@ def test_today_events():
     if not events:
         print("Nessun evento high impact oggi")
     else:
+        print(f"Trovati {len(events)} eventi oggi (guest:guest):")
         for e in events:
-            print(f"{e['Date']} - {e['Event']} ({e['Currency']})")
+            print(f"{e.get('Date')} - {e.get('Event')} ({e.get('Currency')})")
 
 if __name__ == "__main__":
     test_today_events()
