@@ -128,7 +128,7 @@ async def check_releases():
         notified_events.add(news_id)
 
 # -----------------------------
-# Scheduler async
+# Scheduler async con asyncio + schedule
 # -----------------------------
 async def scheduler_loop():
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
@@ -144,7 +144,7 @@ async def scheduler_loop():
 # -----------------------------
 if __name__ == "__main__":
     # Avvia scheduler in background
-    application.job_queue.run_once(lambda ctx: asyncio.create_task(scheduler_loop()), when=0)
-    
+    asyncio.create_task(scheduler_loop())
+
     # Avvia bot Telegram e blocca thread principale
     application.run_polling()
