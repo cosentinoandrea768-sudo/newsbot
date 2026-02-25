@@ -6,14 +6,9 @@ import pytz
 from telegram import Bot
 from flask import Flask
 import threading
-from bs4 import BeautifulSoup
-from impact_logic import evaluate_impact
-
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-import time
+from impact_logic import evaluate_impact
 
 # -----------------------------
 # Variabili ambiente
@@ -40,21 +35,33 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Scraping Forex Factory con Selenium
+# Selenium setup headless
+# -----------------------------
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
+driver = webdriver.Chrome(options=chrome_options)
+
+# -----------------------------
+# Funzioni utility
+# -----------------------------
+def safe_request(url):
+    try:
+        driver.get(url)
+        return driver.page_source
+    except Exception as e:
+        print("Selenium ERROR:", e)
+        return ""
+
+# -----------------------------
+# Scraping Forex Factory
 # -----------------------------
 def get_today_events():
-    options = Options()
-    options.headless = True
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
     url = "https://www.forexfactory.com/calendar.php?week=this"
-    driver.get(url)
-    time.sleep(3)  # aspetta che la pagina carichi JS
-
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    driver.quit()
+    html = safe_request(url)
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
 
     events = []
     rows = soup.select("tr.calendar__row.calendar__row--impact--3")
@@ -63,9 +70,7 @@ def get_today_events():
         if currency not in ["USD", "EUR"]:
             continue
         headline_tag = row.select_one(".calendar__event")
-        if not headline_tag:
-            continue
-        headline = headline_tag.get_text(strip=True)
+        headline = headline_tag.get_text(strip=True) if headline_tag else "Unknown"
         actual = row.get("data-actual")
         forecast = row.get("data-forecast")
         previous = row.get("data-previous")
@@ -111,7 +116,7 @@ async def send_daily():
     print("Daily sent")
 
 # -----------------------------
-# Controllo news e notifiche
+# Controllo news e impatto
 # -----------------------------
 async def check_releases():
     events = get_today_events()
@@ -122,11 +127,22 @@ async def check_releases():
 
         actual = e.get("actual")
         forecast = e.get("forecast")
-        impact = "⚪ Neutro"
-        if actual or forecast:
-            impact = evaluate_impact(e["headline"], actual, forecast)
+        previous = e.get("previous")
 
-        msg = f"📢 {e['headline']}\n\nImpatto: {impact}"
+        if actual or forecast or previous:
+            impact = evaluate_impact(e["headline"], actual, forecast)
+            msg = f"""📊 {e['headline']}
+
+Actual: {actual or '⚪ Non disponibile'}
+Forecast: {forecast or '⚪ Non disponibile'}
+Previous: {previous or '⚪ Non disponibile'}
+
+Impatto: {impact}
+"""
+        else:
+            # Nessun valore numerico → riassunto disattivato per ora
+            msg = f"📢 {e['headline']}\n⚪ Nessun valore numerico disponibile"
+
         await bot.send_message(chat_id=CHAT_ID, text=msg)
         notified_events.add(news_id)
         print("Release sent:", e["headline"])
@@ -154,8 +170,9 @@ async def manual_test():
     await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
     events = get_today_events()
     print(f"News trovate: {len(events)}")
-    for e in events[:5]:
-        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{e['headline']}")
+    if events:
+        first = events[0]
+        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{first['headline']}")
     print("=== TEST COMPLETATO ===")
 
 # -----------------------------
