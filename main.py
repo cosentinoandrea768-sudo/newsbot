@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz
 from flask import Flask
 from impact_logic import evaluate_impact, calculate_surprise
-from telegram.ext import ApplicationBuilder
+from telegram.ext import ApplicationBuilder, ContextTypes
 
 # -----------------------------
 # Variabili ambiente
@@ -33,7 +33,6 @@ app = Flask("bot")
 def home():
     return "🤖 Bot economico attivo!"
 
-# Avvia Flask su porta assegnata da Render
 import threading
 threading.Thread(
     target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
@@ -50,7 +49,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # Usa "EUR" o "Eurozone" per EUR
+    payload = {"country": "USA"}  # Cambia in Eurozone per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -128,7 +127,7 @@ async def check_releases():
         notified_events.add(news_id)
 
 # -----------------------------
-# Scheduler async con asyncio + schedule
+# Scheduler async
 # -----------------------------
 async def scheduler_loop():
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
@@ -142,9 +141,13 @@ async def scheduler_loop():
 # -----------------------------
 # Avvio bot
 # -----------------------------
-if __name__ == "__main__":
-    # Avvia scheduler in background
+async def on_startup(app):
+    # Avvia scheduler quando il bot è pronto
     asyncio.create_task(scheduler_loop())
 
-    # Avvia bot Telegram e blocca thread principale
+if __name__ == "__main__":
+    # Aggiunge callback di startup
+    application.post_init = on_startup
+
+    # Avvia bot Telegram (blocca il thread principale)
     application.run_polling()
