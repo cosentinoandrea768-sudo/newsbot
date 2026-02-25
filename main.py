@@ -7,20 +7,22 @@ import pytz
 from telegram import Bot
 from flask import Flask
 import threading
-import openai
+from openai import OpenAI
 
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
-TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")  # tua API privata
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # chiave OpenAI per riassunti
+TE_API_KEY = os.getenv("TE_API_KEY", "hZNeehWvHVI5wgzPn5UCbIbup3HWeLSl")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
-openai.api_key = OPENAI_API_KEY
+
+# Client OpenAI nuovo
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # -----------------------------
 # Flask per mantenere il Web Service attivo
@@ -31,13 +33,15 @@ app = Flask("bot")
 def home():
     return "🤖 Bot attivo!"
 
-threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
+threading.Thread(
+    target=lambda: app.run(host="0.0.0.0", port=10000),
+    daemon=True
+).start()
 
 # -----------------------------
 # Funzioni utility
 # -----------------------------
 def safe_request(url):
-    """Chiamata sicura alle API."""
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -47,13 +51,17 @@ def safe_request(url):
         return []
 
 def summarize_text(text: str) -> str:
-    """Riassume un testo usando GPT."""
-    if not OPENAI_API_KEY:
+    if not client:
         return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": f"Riassumi i punti principali di questo testo:\n\n{text}"}],
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Riassumi in modo chiaro e professionale i punti principali di questo testo:\n\n{text}"
+                }
+            ],
             max_tokens=300
         )
         return response.choices[0].message.content.strip()
@@ -65,13 +73,14 @@ def summarize_text(text: str) -> str:
 # Eventi Forex USD/EUR
 # -----------------------------
 def get_today_events():
-    today_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
     url = f"https://finnhub.io/api/v1/news?category=forex&token={TE_API_KEY}"
     events = safe_request(url)
-    return [e for e in events if "USD" in e.get("headline","") or "EUR" in e.get("headline","")]
+    return [
+        e for e in events
+        if "USD" in e.get("headline", "") or "EUR" in e.get("headline", "")
+    ]
 
 def get_week_events():
-    # Finnhub free non permette filtro start/end → ritorna eventi di oggi
     return get_today_events()
 
 # -----------------------------
@@ -122,9 +131,8 @@ async def check_releases():
         forecast = e.get("Forecast")
         previous = e.get("Previous")
 
-        # Se ci sono dati numerici → calcola impatto
         if actual or forecast or previous:
-            impact = f"⚪ Non disponibile"  # Puoi integrare evaluate_impact se vuoi
+            impact = "⚪ Non disponibile"
             msg = f"""📊 {e.get("headline")}
 
 Actual: {actual}
@@ -133,15 +141,15 @@ Previous: {previous}
 
 Impatto: {impact}
 """
-        # Se non ci sono dati → assume sia un discorso
         else:
             news_link = e.get("url")
             transcript = ""
+
             if news_link:
                 try:
                     r = requests.get(news_link, timeout=10)
                     if r.status_code == 200:
-                        transcript = r.text
+                        transcript = r.text[:5000]
                 except Exception as ex:
                     print("Errore fetch transcript:", ex)
 
@@ -169,22 +177,14 @@ async def main_loop():
         await asyncio.sleep(30)
 
 # -----------------------------
-# Avvio bot
-# -----------------------------
-if __name__ == "__main__":
-    asyncio.run(manual_test())
-
-# -----------------------------
 # FUNZIONE TEST MANUALE
 # -----------------------------
 async def manual_test():
     print("=== TEST AVVIATO ===")
 
-    # Test 1: Messaggio semplice Telegram
     await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
     print("Test Telegram inviato")
 
-    # Test 2: News API
     events = get_today_events()
     print(f"News trovate: {len(events)}")
 
@@ -196,11 +196,9 @@ async def manual_test():
         )
         print("Test News inviato")
 
-    # Test 3: Riassunto GPT
     test_text = """
     The Federal Reserve decided to keep interest rates unchanged.
-    Chair Powell said inflation is still above target and further tightening
-    could be considered if necessary.
+    Chair Powell said inflation remains elevated and further tightening could be considered.
     """
 
     summary = summarize_text(test_text)
@@ -209,6 +207,11 @@ async def manual_test():
         chat_id=CHAT_ID,
         text=f"🤖 Test Riassunto GPT:\n\n{summary}"
     )
-    print("Test GPT inviato")
 
     print("=== TEST COMPLETATO ===")
+
+# -----------------------------
+# Avvio bot
+# -----------------------------
+if __name__ == "__main__":
+    asyncio.run(manual_test())
