@@ -1,5 +1,4 @@
 import os
-import requests
 import asyncio
 import schedule
 from datetime import datetime
@@ -8,20 +7,23 @@ from telegram import Bot
 from flask import Flask
 import threading
 from bs4 import BeautifulSoup
-from openai import OpenAI
 from impact_logic import evaluate_impact
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+import time
 
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # -----------------------------
 # Flask per mantenere il Web Service attivo
@@ -38,47 +40,23 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Funzioni utility
-# -----------------------------
-def safe_request(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/117.0.0.0 Safari/537.36"
-    }
-    try:
-        response = requests.get(url, timeout=10, headers=headers)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        print("API ERROR:", e)
-        return ""
-
-def summarize_text(text: str) -> str:
-    if not client:
-        return "⚪ OPENAI_API_KEY non impostata, impossibile fare riassunto."
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user",
-                       "content": f"Riassumi in modo chiaro e professionale i punti principali di questo testo:\n\n{text}"}],
-            max_tokens=300
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print("Errore riassunto GPT:", e)
-        return "⚪ Riassunto non disponibile"
-
-# -----------------------------
-# Scraping Forex Factory
+# Scraping Forex Factory con Selenium
 # -----------------------------
 def get_today_events():
+    options = Options()
+    options.headless = True
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
     url = "https://www.forexfactory.com/calendar.php?week=this"
-    html = safe_request(url)
-    soup = BeautifulSoup(html, "html.parser")
+    driver.get(url)
+    time.sleep(3)  # aspetta che la pagina carichi JS
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    driver.quit()
 
     events = []
-    # Prende solo le righe della tabella calendar con high impact
     rows = soup.select("tr.calendar__row.calendar__row--impact--3")
     for row in rows:
         currency = row.get("data-currency")
@@ -133,7 +111,7 @@ async def send_daily():
     print("Daily sent")
 
 # -----------------------------
-# Controllo news e riassunto
+# Controllo news e notifiche
 # -----------------------------
 async def check_releases():
     events = get_today_events()
@@ -144,22 +122,11 @@ async def check_releases():
 
         actual = e.get("actual")
         forecast = e.get("forecast")
-        previous = e.get("previous")
-
-        if actual or forecast or previous:
+        impact = "⚪ Neutro"
+        if actual or forecast:
             impact = evaluate_impact(e["headline"], actual, forecast)
-            msg = f"""📊 {e['headline']}
 
-Actual: {actual or '⚪ Non disponibile'}
-Forecast: {forecast or '⚪ Non disponibile'}
-Previous: {previous or '⚪ Non disponibile'}
-
-Impatto: {impact}
-"""
-        else:
-            summary = summarize_text(e["headline"])
-            msg = f"📢 {e['headline']}\n\n{summary}"
-
+        msg = f"📢 {e['headline']}\n\nImpatto: {impact}"
         await bot.send_message(chat_id=CHAT_ID, text=msg)
         notified_events.add(news_id)
         print("Release sent:", e["headline"])
@@ -185,16 +152,10 @@ async def main_loop():
 async def manual_test():
     print("=== TEST AVVIATO ===")
     await bot.send_message(chat_id=CHAT_ID, text="✅ Test Telegram OK")
-
     events = get_today_events()
     print(f"News trovate: {len(events)}")
-    if events:
-        first = events[0]
-        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{first['headline']}")
-
-    test_text = "The Federal Reserve decided to keep interest rates unchanged. Chair Powell said inflation remains elevated."
-    summary = summarize_text(test_text)
-    await bot.send_message(chat_id=CHAT_ID, text=f"🤖 Test Riassunto GPT:\n\n{summary}")
+    for e in events[:5]:
+        await bot.send_message(chat_id=CHAT_ID, text=f"📰 Test News:\n{e['headline']}")
     print("=== TEST COMPLETATO ===")
 
 # -----------------------------
