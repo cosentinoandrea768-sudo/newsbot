@@ -142,7 +142,9 @@ async def scheduler_loop():
 # Avvio bot + scheduler
 # -----------------------------
 if __name__ == "__main__":
-    # Scheduler in background
-    asyncio.create_task(scheduler_loop())
-    # Avvio bot Telegram (blocca il thread principale)
-    application.run_polling()
+    # Ottieni event loop corrente di Render
+    loop = asyncio.get_event_loop()
+    # Avvia scheduler in background
+    loop.create_task(scheduler_loop())
+    # Avvia il bot Telegram senza chiudere l'event loop
+    loop.run_until_complete(application.run_polling())
