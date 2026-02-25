@@ -4,4 +4,4 @@ schedule
 pytz
 flask
 beautifulsoup4
-openai
+selenium
