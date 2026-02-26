@@ -48,7 +48,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # Cambia in Eurozone per EUR
+    payload = {"country": "USA"}  # Cambia in "Eurozone" per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -125,14 +125,17 @@ async def check_releases():
         notified_events.add(news_id)
 
 # -----------------------------
-# Scheduler async
+# Scheduler con test iniziale
 # -----------------------------
 async def scheduler_loop():
-    # News giornaliere alle 07:00
+    # Test iniziale all'avvio
+    print("⚡ Avvio bot: invio daily news e controllo release iniziali")
+    await send_daily()
+    await check_releases()
+
+    # Scheduler giornaliero e settimanale
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
-    # News settimanali ogni lunedì alle 07:00
     schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
-    # Controllo aggiornamenti ogni 5 minuti
     schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
     while True:
