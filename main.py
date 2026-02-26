@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz
 from flask import Flask
 from impact_logic import evaluate_impact, calculate_surprise
-from telegram.ext import ApplicationBuilder, ContextTypes
+from telegram.ext import ApplicationBuilder
 
 # -----------------------------
 # Variabili ambiente
@@ -17,7 +17,6 @@ API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
-weekly_score = {"USD": 0, "EUR": 0}
 
 # -----------------------------
 # Bot Telegram
@@ -91,13 +90,14 @@ async def send_daily():
     await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
 async def send_weekly():
-    msg = "📊 *Weekly Bias Report*\n\n"
-    for currency, score in weekly_score.items():
-        bias = "🟢 Rialzista" if score > 0 else "🔴 Ribassista" if score < 0 else "⚪ Neutro"
-        msg += f"{currency}: {score} → {bias}\n"
+    events = fetch_events()
+    if not events:
+        return
+    msg = "📅 *High Impact USD & EUR - Settimana*\n\n"
+    for e in events:
+        date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
+        msg += f"{date_str} - {e['headline']}\n"
     await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-    weekly_score["USD"] = 0
-    weekly_score["EUR"] = 0
 
 # -----------------------------
 # Controllo news / impatto
@@ -111,10 +111,8 @@ async def check_releases():
 
         actual = e.get("actual")
         forecast = e.get("forecast")
-        impact_label, score = evaluate_impact(e["headline"], actual, forecast)
+        impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
         surprise = calculate_surprise(actual, forecast)
-
-        weekly_score[e["currency"]] += score
 
         msg = (
             f"📊 *{e['headline']}* ({e['currency']})\n\n"
@@ -130,8 +128,11 @@ async def check_releases():
 # Scheduler async
 # -----------------------------
 async def scheduler_loop():
+    # News giornaliere alle 07:00
     schedule.every().day.at("07:00").do(lambda: asyncio.create_task(send_daily()))
+    # News settimanali ogni lunedì alle 07:00
     schedule.every().monday.at("07:00").do(lambda: asyncio.create_task(send_weekly()))
+    # Controllo aggiornamenti ogni 5 minuti
     schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
     while True:
@@ -139,15 +140,7 @@ async def scheduler_loop():
         await asyncio.sleep(30)
 
 # -----------------------------
-# Avvio bot
+# Avvio bot senza polling
 # -----------------------------
-async def on_startup(app):
-    # Avvia scheduler quando il bot è pronto
-    asyncio.create_task(scheduler_loop())
-
 if __name__ == "__main__":
-    # Aggiunge callback di startup
-    application.post_init = on_startup
-
-    # Avvia bot Telegram (blocca il thread principale)
-    application.run_polling()
+    asyncio.run(scheduler_loop())
