@@ -4,9 +4,8 @@ import schedule
 import requests
 from datetime import datetime
 import pytz
-from flask import Flask, request
+from flask import Flask
 from impact_logic import evaluate_impact, calculate_surprise
-from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes
 
 # -----------------------------
@@ -15,7 +14,6 @@ from telegram.ext import ApplicationBuilder, ContextTypes
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key
-DOMAIN = os.getenv("DOMAIN")  # es: newsbot-4yd0.onrender.com
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
@@ -35,12 +33,11 @@ app = Flask("bot")
 def home():
     return "🤖 Bot economico attivo!"
 
-# Webhook route
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.create_task(application.update_queue.put(update))
-    return "OK"
+import threading
+threading.Thread(
+    target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
+    daemon=True
+).start()
 
 # -----------------------------
 # Fetch eventi via API
@@ -52,7 +49,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # Usa "EUR" per EUR
+    payload = {"country": "USA"}  # Cambia in Eurozone per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -142,22 +139,15 @@ async def scheduler_loop():
         await asyncio.sleep(30)
 
 # -----------------------------
-# Avvio bot + scheduler
+# Avvio bot
 # -----------------------------
-async def main():
-    # Imposta webhook Telegram
-    webhook_url = f"https://{DOMAIN}/{BOT_TOKEN}"
-    await application.bot.set_webhook(webhook_url)
-    print(f"Webhook impostato su {webhook_url}")
-
-    # Avvia scheduler in background
+async def on_startup(app):
+    # Avvia scheduler quando il bot è pronto
     asyncio.create_task(scheduler_loop())
 
 if __name__ == "__main__":
-    # Avvia Flask (serve webhook) + scheduler
-    import threading
-    threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
-        daemon=True
-    ).start()
-    asyncio.run(main())
+    # Aggiunge callback di startup
+    application.post_init = on_startup
+
+    # Avvia bot Telegram (blocca il thread principale)
+    application.run_polling()
