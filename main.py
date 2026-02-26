@@ -7,7 +7,7 @@ import pytz
 from flask import Flask, request
 from impact_logic import evaluate_impact, calculate_surprise
 from telegram import Update
-from telegram.ext import ApplicationBuilder
+from telegram.ext import ApplicationBuilder, ContextTypes
 
 # -----------------------------
 # Variabili ambiente
@@ -15,6 +15,7 @@ from telegram.ext import ApplicationBuilder
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key
+DOMAIN = os.getenv("DOMAIN")  # es: newsbot-4yd0.onrender.com
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
@@ -34,19 +35,12 @@ app = Flask("bot")
 def home():
     return "🤖 Bot economico attivo!"
 
+# Webhook route
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    """Riceve update da Telegram e li mette in coda all'application."""
     update = Update.de_json(request.get_json(force=True), application.bot)
     asyncio.create_task(application.update_queue.put(update))
     return "OK"
-
-# Avvio Flask in un thread separato
-import threading
-threading.Thread(
-    target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
-    daemon=True
-).start()
 
 # -----------------------------
 # Fetch eventi via API
@@ -58,7 +52,7 @@ def fetch_events():
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {"country": "USA"}  # Usa "EUR" o "Eurozone" per EUR
+    payload = {"country": "USA"}  # Usa "EUR" per EUR
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -151,15 +145,19 @@ async def scheduler_loop():
 # Avvio bot + scheduler
 # -----------------------------
 async def main():
+    # Imposta webhook Telegram
+    webhook_url = f"https://{DOMAIN}/{BOT_TOKEN}"
+    await application.bot.set_webhook(webhook_url)
+    print(f"Webhook impostato su {webhook_url}")
+
     # Avvia scheduler in background
     asyncio.create_task(scheduler_loop())
 
-    # Imposta il webhook Telegram per Render
-    webhook_url = f"https://<IL_TUO_DOMINIO>.onrender.com/{BOT_TOKEN}"
-    await application.bot.set_webhook(webhook_url)
-
-    # Avvia il bot Telegram (blocca il thread principale)
-    await application.run_polling()  # Puoi anche usare run_webhook se vuoi solo webhook
-
 if __name__ == "__main__":
+    # Avvia Flask (serve webhook) + scheduler
+    import threading
+    threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
+        daemon=True
+    ).start()
     asyncio.run(main())
