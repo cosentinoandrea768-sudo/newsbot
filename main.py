@@ -24,7 +24,6 @@ if not CHAT_ID:
     raise ValueError("CHAT_ID non impostato")
 
 bot = Bot(token=BOT_TOKEN)
-print("[DEBUG] Startup Telegram OK")
 
 # ==============================
 # FLASK (Render richiede porta)
@@ -41,7 +40,7 @@ def home():
 sent_events = set()
 
 # ==============================
-# FETCH EVENTS DA RAPIDAPI (USD/EUR & High Impact)
+# FETCH EVENTS DA RAPIDAPI
 # ==============================
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/get_list"
@@ -68,6 +67,8 @@ def fetch_events():
 
     description = data.get("description", [])
     graph = data.get("graph", [])
+
+    # Mappa rapida per prendere actual/forecast dal graph
     graph_map = {g.get("dateline"): g for g in graph if isinstance(g, dict)}
 
     events = []
@@ -79,16 +80,15 @@ def fetch_events():
         currency = item.get("currency")
         impact = item.get("impact")
         dateline = item.get("next_dateline")
-        name = item.get("name")
 
-        # LOG DEBUG
-        print(f"[DEBUG] News raw: {name} | {currency} | {impact} | {dateline}")
-
-        # Filtro: solo USD/EUR e High impact
+        # Filtro solo USD / EUR
         if currency not in ["USD", "EUR"]:
             continue
+
+        # Solo High Impact
         if impact != "High":
             continue
+
         if not dateline:
             continue
 
@@ -101,13 +101,17 @@ def fetch_events():
         if event_time.date() != today:
             continue
 
+        # Prende actual / forecast dal graph se esiste
         graph_data = graph_map.get(dateline, {})
         actual = graph_data.get("actual_formatted") or graph_data.get("actual")
         forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
 
+        if actual is None or forecast is None:
+            print(f"[INFO] Dati mancanti per {item.get('name')} ({currency})")
+
         event = {
-            "id": f"{name}_{dateline}",
-            "name": name,
+            "id": f"{item.get('name')}_{dateline}",
+            "name": item.get("name"),
             "currency": currency,
             "actual": actual,
             "forecast": forecast,
@@ -116,7 +120,6 @@ def fetch_events():
 
         events.append(event)
 
-    print(f"[DEBUG] Eventi filtrati: {len(events)}")
     return events
 
 # ==============================
@@ -132,6 +135,7 @@ async def send_events():
     print(f"[INFO] Eventi trovati: {len(events)}")
 
     for event in events:
+
         if event["id"] in sent_events:
             continue
 
@@ -166,7 +170,8 @@ async def scheduler():
             await send_events()
         except Exception as e:
             print("[LOOP ERROR]", e)
-        await asyncio.sleep(300)  # ogni 5 minuti
+
+        await asyncio.sleep(300)  # controlla ogni 5 minuti
 
 # ==============================
 # MAIN
@@ -174,14 +179,14 @@ async def scheduler():
 if __name__ == "__main__":
     from threading import Thread
 
-    # Flask in thread separato
+    # Avvia Flask in un thread separato
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
 
     flask_thread = Thread(target=run_flask)
     flask_thread.start()
 
-    # Scheduler async nel main thread
+    # Avvia scheduler async nel main thread (Python 3.14 safe)
     try:
         asyncio.run(scheduler())
     except Exception as e:
