@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import pytz
 from flask import Flask
 from telegram import Bot
@@ -16,8 +16,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 PORT = int(os.getenv("PORT", 10000))
 
-if not RAPIDAPI_KEY or not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("RAPIDAPI_KEY, BOT_TOKEN o CHAT_ID non impostati")
+if not RAPIDAPI_KEY:
+    raise ValueError("RAPIDAPI_KEY non impostata")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN non impostato")
+if not CHAT_ID:
+    raise ValueError("CHAT_ID non impostato")
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -31,31 +35,33 @@ def home():
     return "Bot attivo ✅"
 
 # ==============================
-# GLOBAL STATE
+# GLOBAL STATE (anti-duplicati)
 # ==============================
 sent_events = set()
 
 # ==============================
-# FETCH NEWS
+# FETCH EVENTS DA Ultimate Economic Calendar
 # ==============================
-def fetch_events(from_date=None, to_date=None):
+def fetch_events(days_ahead=0):
     """
-    Recupera le news dall'Ultimate Economic Calendar API
+    Ritorna eventi da oggi fino a days_ahead (0 = oggi, 7 = settimana prossima)
     """
-    if from_date is None:
-        from_date = datetime.now(timezone.utc).date()
-    if to_date is None:
-        to_date = from_date
+    today_utc = datetime.now(pytz.utc).date()
+    to_date = today_utc + timedelta(days=days_ahead)
 
-    url = f"https://ultimate-economic-calendar.p.rapidapi.com/economic-events/tradingview?from={from_date}&to={to_date}&countries=US,EU"
-
+    url = "https://ultimate-economic-calendar.p.rapidapi.com/economic-events/tradingview"
+    params = {
+        "from": today_utc.isoformat(),
+        "to": to_date.isoformat(),
+        "countries": "US,EU"  # filtra solo USD / EUR
+    }
     headers = {
         "x-rapidapi-host": "ultimate-economic-calendar.p.rapidapi.com",
         "x-rapidapi-key": RAPIDAPI_KEY
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -63,36 +69,29 @@ def fetch_events(from_date=None, to_date=None):
         return []
 
     events = []
-    today = datetime.now(timezone.utc).date()
-
-    for item in data.get("events", []):
-        # Filtra solo USD/EUR e High Impact
+    for item in data:
+        # filtro currency
         if item.get("currency") not in ["USD", "EUR"]:
             continue
-        if item.get("impact") != "High":
+        # filtro importanza (High Impact)
+        if item.get("importance", 0) < 1:
             continue
 
-        # Data evento
         try:
-            event_time = datetime.fromisoformat(item.get("date")[:-1] + "+00:00")
+            event_time = datetime.fromisoformat(item["date"].replace("Z", "+00:00"))
         except Exception:
             continue
 
-        # Filtro solo eventi da today in poi
-        if event_time.date() < today:
-            continue
-
-        actual = item.get("actual")
-        forecast = item.get("forecast")
-
-        events.append({
-            "id": f"{item.get('title')}_{item.get('date')}",
-            "name": item.get("title"),
+        event = {
+            "id": item.get("id"),
+            "name": item.get("indicator") or item.get("title"),
             "currency": item.get("currency"),
-            "actual": actual,
-            "forecast": forecast,
-            "time": event_time.strftime("%Y-%m-%d %H:%M UTC")
-        })
+            "actual": item.get("actual"),
+            "forecast": item.get("forecast"),
+            "time": event_time.strftime("%H:%M UTC")
+        }
+
+        events.append(event)
 
     return events
 
@@ -100,9 +99,14 @@ def fetch_events(from_date=None, to_date=None):
 # INVIO TELEGRAM
 # ==============================
 async def send_events(events):
+    if not events:
+        print("[INFO] Nessuna news da inviare")
+        return
+
     for event in events:
         if event["id"] in sent_events:
             continue
+
         label, score = evaluate_impact(event["name"], event["actual"], event["forecast"])
         message = (
             f"📊 {event['currency']} HIGH IMPACT\n"
@@ -120,40 +124,33 @@ async def send_events(events):
             print("[TELEGRAM ERROR]", e)
 
 # ==============================
-# STARTUP MESSAGE + NEWS SETTIMANA
+# MESSAGGIO DI TEST
 # ==============================
-async def startup_send():
-    # Messaggio di avvio
+async def send_startup_message():
     try:
-        await bot.send_message(chat_id=CHAT_ID, text="🤖 Bot avviato correttamente!")
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente!")
+        print("[DEBUG] Messaggio di startup inviato")
     except Exception as e:
-        print("[TELEGRAM ERROR STARTUP]", e)
-
-    # Prende tutte le news della settimana
-    from_date = datetime.now(timezone.utc).date()
-    to_date = from_date + timedelta(days=7)
-    events = fetch_events(from_date, to_date)
-    if events:
-        print(f"[INFO] Inviando {len(events)} news della settimana")
-        await send_events(events)
-    else:
-        print("[INFO] Nessuna news della settimana da inviare")
+        print("[TELEGRAM ERROR]", e)
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
+    # invia messaggio di startup
+    await send_startup_message()
+    # invia tutte le news della settimana prossima (7 giorni)
+    events = fetch_events(days_ahead=7)
+    await send_events(events)
+
+    # loop continuo ogni 5 minuti
     while True:
         try:
-            # Controlla solo eventi di oggi
-            events = fetch_events()
-            if events:
-                await send_events(events)
-            else:
-                print("[INFO] Nessuna news oggi")
+            events = fetch_events(days_ahead=0)
+            await send_events(events)
         except Exception as e:
             print("[LOOP ERROR]", e)
-        await asyncio.sleep(300)  # ogni 5 minuti
+        await asyncio.sleep(300)
 
 # ==============================
 # MAIN
@@ -161,12 +158,14 @@ async def scheduler():
 if __name__ == "__main__":
     from threading import Thread
 
-    # Flask in thread separato
-    Thread(target=lambda: app.run(host="0.0.0.0", port=PORT)).start()
+    # Flask in un thread separato
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
 
-    # Avvia startup + scheduler
-    async def main():
-        await startup_send()
-        await scheduler()
+    Thread(target=run_flask).start()
 
-    asyncio.run(main())
+    # Scheduler async nel main thread
+    try:
+        asyncio.run(scheduler())
+    except Exception as e:
+        print("[FATAL ERROR]", e)
