@@ -5,6 +5,7 @@ import pytz
 from flask import Flask
 from telegram import Bot
 from impact_logic import evaluate_impact
+import feedparser
 
 # ==============================
 # ENV VARS
@@ -30,100 +31,125 @@ def home():
 # ==============================
 # GLOBAL STATE
 # ==============================
-sent_events = set()
+sent_daily = set()
+sent_weekly = dict()  # key=id, value=dict con dati già inviati
 
 # ==============================
-# MOCK NEWS (per test e sviluppo)
+# RSS URL
 # ==============================
-def get_mock_events():
-    today = datetime.now(pytz.utc)
+RSS_ECONOMY = "https://www.investing.com/rss/news_14.rss"
+RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
+
+# ==============================
+# FETCH NEWS
+# ==============================
+def parse_rss_date(datestr):
+    """Parse feedparser date in UTC datetime"""
+    try:
+        return datetime(*datestr[:6], tzinfo=pytz.utc)
+    except:
+        return datetime.now(pytz.utc)
+
+async def fetch_daily_news():
+    feed = feedparser.parse(RSS_ECONOMY)
+    today = datetime.now(pytz.utc).date()
     events = []
-    for i in range(1, 8):  # 7 giorni
-        event_time = today + timedelta(days=i)
-        dateline = event_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    for item in feed.entries:
+        pub_date = parse_rss_date(item.published_parsed)
+        if pub_date.date() == today:
+            events.append({
+                "id": item.link,
+                "title": item.title,
+                "link": item.link,
+                "summary": getattr(item, "summary", "")
+            })
+    return events
+
+async def fetch_weekly_indicators():
+    feed = feedparser.parse(RSS_INDICATORS)
+    week_ago = datetime.now(pytz.utc) - timedelta(days=7)
+    events = []
+
+    for item in feed.entries:
+        pub_date = parse_rss_date(item.published_parsed)
         events.append({
-            "id": f"Mock_Event_{i}_{dateline}",
-            "name": f"Mock Event {i}",
-            "currency": "USD" if i % 2 == 0 else "EUR",
-            "actual": round(100 + i * 0.5, 2),
-            "forecast": round(100 + i * 0.2, 2),
-            "time": event_time.strftime("%H:%M UTC")
+            "id": item.link,
+            "name": item.title,
+            "link": item.link,
+            "pub_date": pub_date,
+            "previous": getattr(item, "previous", "-"),
+            "forecast": getattr(item, "forecast", "-"),
+            "actual": getattr(item, "actual", "-")  # se non ancora disponibile
         })
     return events
 
 # ==============================
-# FUNZIONE FETCH EVENTS
-# ==============================
-async def fetch_events():
-    """
-    Qui puoi sostituire con la chiamata reale all'API.
-    Per ora restituisce mock events.
-    """
-    # Esempio di utilizzo API reale:
-    # events = call_real_api()
-    # return events
-    return get_mock_events()
-
-# ==============================
 # INVIO TELEGRAM
 # ==============================
-async def send_events():
-    events = await fetch_events()
-
-    if not events:
-        print("[INFO] Nessuna news oggi")
-        return
-
-    for event in events:
-        if event["id"] in sent_events:
+async def send_daily_news():
+    events = await fetch_daily_news()
+    for e in events:
+        if e["id"] in sent_daily:
             continue
-
-        label, score = evaluate_impact(event["name"], event["actual"], event["forecast"])
-        message = (
-            f"📊 {event['currency']} HIGH IMPACT\n"
-            f"{event['name']}\n"
-            f"🕒 {event['time']}\n"
-            f"Actual: {event['actual']}\n"
-            f"Forecast: {event['forecast']}\n"
-            f"Impact Score: {score} ({label})"
-        )
-
+        msg = f"📰 {e['title']}\n{e.get('summary','')}\n🔗 {e['link']}"
         try:
-            await bot.send_message(chat_id=CHAT_ID, text=message)
-            sent_events.add(event["id"])
-            print(f"[SENT] {event['name']}")
-        except Exception as e:
-            print("[TELEGRAM ERROR]", e)
+            await bot.send_message(chat_id=CHAT_ID, text=msg)
+            sent_daily.add(e["id"])
+        except Exception as ex:
+            print("[TELEGRAM ERROR]", ex)
+
+async def send_weekly_indicators():
+    events = await fetch_weekly_indicators()
+    for e in events:
+        prev_data = sent_weekly.get(e["id"], {"actual":"-", "impact":"⚪ Neutro"})
+        actual = e.get("actual", "-") or prev_data["actual"]
+        label, score = evaluate_impact(e["name"], actual, e.get("forecast", "-"))
+        msg = (
+            f"📊 {e['name']}\n"
+            f"🕒 Orario uscita: {e['pub_date'].strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"Previous: {e.get('previous','-')}\n"
+            f"Forecast: {e.get('forecast','-')}\n"
+            f"Actual: {actual}\n"
+            f"Impact: {label}\n"
+            f"🔗 {e['link']}"
+        )
+        try:
+            await bot.send_message(chat_id=CHAT_ID, text=msg)
+            sent_weekly[e["id"]] = {"actual": actual, "impact": label}
+        except Exception as ex:
+            print("[TELEGRAM ERROR]", ex)
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
-    # Messaggio di startup
     try:
         await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
-        print("[DEBUG] Messaggio di startup inviato")
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
 
     while True:
-        try:
-            await send_events()
-        except Exception as e:
-            print("[LOOP ERROR]", e)
+        now = datetime.now(pytz.utc)
+        # Invia news giornaliere alle 08:00 UTC
+        if now.hour == 8 and now.minute < 5:
+            await send_daily_news()
+        # Invia indicatori settimanali lunedì alle 08:00 UTC
+        if now.weekday() == 0 and now.hour == 8 and now.minute < 5:
+            await send_weekly_indicators()
 
-        await asyncio.sleep(300)  # controlla ogni 5 minuti
+        await asyncio.sleep(60)  # controlla ogni minuto
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
     from threading import Thread
+    import schedule
 
     # Avvia Flask in background
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
-
     Thread(target=run_flask).start()
 
     # Avvia scheduler
