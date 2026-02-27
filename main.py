@@ -6,6 +6,7 @@ from flask import Flask
 from telegram import Bot
 from impact_logic import evaluate_impact
 import feedparser
+from googletrans import Translator
 
 # ==============================
 # ENV VARS
@@ -18,6 +19,7 @@ if not BOT_TOKEN or not CHAT_ID:
     raise ValueError("BOT_TOKEN o CHAT_ID non impostati")
 
 bot = Bot(token=BOT_TOKEN)
+translator = Translator()
 
 # ==============================
 # FLASK
@@ -96,7 +98,13 @@ async def send_daily_news():
     for e in events:
         if e["id"] in sent_daily:
             continue
-        msg = f"📰 {e['title']}\n{e.get('summary','')}\n🔗 {e['link']}"
+
+        # Traduzione titolo e summary in italiano
+        titolo_it = translator.translate(e["title"], src='en', dest='it').text
+        summary_it = translator.translate(e.get("summary",""), src='en', dest='it').text
+
+        msg = f"📰 {titolo_it}\n{summary_it}\n🔗 {e['link']}"
+
         try:
             if e.get("image"):
                 await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
@@ -113,8 +121,11 @@ async def send_weekly_indicators():
         actual = e.get("actual", "-") or prev_data["actual"]
         label, score = evaluate_impact(e["name"], actual, e.get("forecast", "-"))
 
+        # Traduzione nome indicatore in italiano
+        nome_it = translator.translate(e['name'], src='en', dest='it').text
+
         msg = (
-            f"📊 {e['name']}\n"
+            f"📊 {nome_it}\n"
             f"🕒 Orario uscita: {e['pub_date'].strftime('%Y-%m-%d %H:%M UTC')}\n"
             f"Previous: {e.get('previous','-')}\n"
             f"Forecast: {e.get('forecast','-')}\n"
@@ -133,22 +144,22 @@ async def send_weekly_indicators():
             print("[TELEGRAM ERROR]", ex)
 
 # ==============================
-# SCHEDULER (versione TEST)
+# SCHEDULER (VERSIONE TEST)
 # ==============================
 async def scheduler():
     # Messaggio di startup
     try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente (TEST RSS)")
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente (TEST RSS ITALIANO)")
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
 
     # --- INVIO IMMEDIATO PER TEST ---
-    print("[DEBUG] Invio news giornaliere...")
+    print("[DEBUG] Invio news giornaliere tradotte...")
     await send_daily_news()
-    print("[DEBUG] Invio indicatori settimanali...")
+    print("[DEBUG] Invio indicatori settimanali tradotti...")
     await send_weekly_indicators()
 
-    # Loop normale (opzionale)
+    # Loop normale opzionale
     while True:
         await asyncio.sleep(3600)  # ogni ora
 
