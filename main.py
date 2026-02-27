@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 import pytz
+from flask import Flask
 from telegram import Bot
 import feedparser
 from deep_translator import GoogleTranslator
@@ -11,12 +12,22 @@ from impact_logic import evaluate_impact
 # ==============================
 BOT_TOKEN = "INSERISCI_IL_TUO_BOT_TOKEN"
 CHAT_ID = "INSERISCI_IL_TUO_CHAT_ID"
+PORT = 10000
 
 bot = Bot(token=BOT_TOKEN)
 translator = GoogleTranslator(source='en', target='it')
 
 RSS_ECONOMY = "https://www.investing.com/rss/news_14.rss"
 RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
+
+# ==============================
+# FLASK
+# ==============================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot attivo ✅"
 
 # ==============================
 # HELPERS
@@ -96,6 +107,7 @@ async def send_daily_news():
                 await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
             else:
                 await bot.send_message(chat_id=CHAT_ID, text=msg)
+            await asyncio.sleep(1.5)  # Delay per evitare flood
         except Exception as ex:
             print("[TELEGRAM ERROR]", ex)
 
@@ -118,15 +130,39 @@ async def send_indicators():
         )
         try:
             await bot.send_message(chat_id=CHAT_ID, text=msg)
+            await asyncio.sleep(1.5)  # Delay per evitare flood
         except Exception as ex:
             print("[TELEGRAM ERROR]", ex)
 
 # ==============================
-# MAIN TEST
+# SCHEDULER TEST
 # ==============================
-async def main():
-    await send_daily_news()
-    await send_indicators()
+async def scheduler():
+    # Messaggio di startup
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
+    except Exception as e:
+        print("[TELEGRAM ERROR] Startup:", e)
 
+    while True:
+        try:
+            await send_daily_news()
+            await send_indicators()
+        except Exception as e:
+            print("[LOOP ERROR]", e)
+        await asyncio.sleep(600)  # Controlla ogni 10 minuti
+
+# ==============================
+# MAIN
+# ==============================
 if __name__ == "__main__":
-    asyncio.run(main())
+    from threading import Thread
+
+    # Flask in background
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
+
+    Thread(target=run_flask).start()
+
+    # Avvia scheduler
+    asyncio.run(scheduler())
