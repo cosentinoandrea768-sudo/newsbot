@@ -2,12 +2,11 @@ import os
 import asyncio
 import schedule
 import requests
-import json
 from datetime import datetime
 import pytz
 from flask import Flask
-from impact_logic import evaluate_impact, calculate_surprise
 from telegram.ext import ApplicationBuilder
+from impact_logic import evaluate_impact, calculate_surprise
 
 # -----------------------------
 # Variabili ambiente
@@ -40,7 +39,7 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Fetch eventi via ForexFactory API
+# Fetch eventi via API ForexFactory
 # -----------------------------
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
@@ -49,12 +48,11 @@ def fetch_events():
         "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-
     payload = {}
+
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
-        print("DEBUG API RESPONSE (prime 5 news):", json.dumps(data[:5], indent=2))
     except Exception as e:
         print("Errore API:", e)
         return []
@@ -62,36 +60,50 @@ def fetch_events():
     events = []
     for item in data:
         currency = item.get("currency")
-        headline = item.get("name")
-        impact_value = str(item.get("impact", "")).lower()
-
-        # Filtro: USD/EUR, High Impact
+        impact = str(item.get("impact", "")).lower()
         if currency not in ["USD", "EUR"]:
             continue
-        if impact_value != "high":
+        if impact != "high":
             continue
 
-        ts = int(datetime.now(TIMEZONE).timestamp())
-        news_id = f"{headline}_{currency}_{ts}"
+        # timestamp corretto della news
+        date_str = item.get("date")  # esempio: "2026-02-27 14:30"
+        if date_str:
+            try:
+                ts = int(datetime.strptime(date_str, "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE).timestamp())
+            except:
+                ts = int(datetime.now(TIMEZONE).timestamp())
+        else:
+            ts = int(datetime.now(TIMEZONE).timestamp())
+
+        news_id = f"{item.get('name')}_{currency}_{ts}"
 
         events.append({
             "id": news_id,
             "currency": currency,
-            "headline": headline,
+            "headline": item.get("name"),
             "actual": item.get("actual"),
             "forecast": item.get("forecast"),
             "previous": item.get("previous"),
-            "impact": impact_value,
             "datetime": ts
         })
 
+    print(f"DEBUG: trovate {len(events)} news high impact USD/EUR oggi")
     return events
 
 # -----------------------------
 # Messaggi daily / weekly
 # -----------------------------
+def format_event_msg(event):
+    date_str = datetime.fromtimestamp(event["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    actual = event["actual"] or "N/D"
+    forecast = event["forecast"] or "N/D"
+    previous = event["previous"] or "N/D"
+    return f"{date_str} | {event['headline']} ({event['currency']})\nForecast: {forecast} | Previous: {previous}\n"
+
 async def send_daily():
     events = fetch_events()
+
     if not events:
         await application.bot.send_message(
             chat_id=CHAT_ID,
@@ -101,12 +113,7 @@ async def send_daily():
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%H:%M")
-        actual = e["actual"] or "N/D"
-        forecast = e["forecast"] or "N/D"
-        previous = e["previous"] or "N/D"
-        msg += f"{date_str} - {e['headline']} ({e['currency']})\n"
-        msg += f"Forecast: {forecast} | Previous: {previous}\n\n"
+        msg += format_event_msg(e) + "\n"
 
     await application.bot.send_message(
         chat_id=CHAT_ID,
@@ -116,6 +123,7 @@ async def send_daily():
 
 async def send_weekly():
     events = fetch_events()
+
     if not events:
         await application.bot.send_message(
             chat_id=CHAT_ID,
@@ -125,8 +133,7 @@ async def send_weekly():
 
     msg = "📆 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
-        msg += f"{date_str} - {e['headline']} ({e['currency']})\n"
+        msg += format_event_msg(e) + "\n"
 
     await application.bot.send_message(
         chat_id=CHAT_ID,
@@ -139,6 +146,7 @@ async def send_weekly():
 # -----------------------------
 async def check_releases():
     events = fetch_events()
+
     for e in events:
         news_id = e["id"]
         if news_id in notified_events:
@@ -147,27 +155,25 @@ async def check_releases():
         actual = e.get("actual")
         forecast = e.get("forecast")
 
-        # Solo se actual disponibile
-        if actual:
-            impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
-            surprise = calculate_surprise(actual, forecast)
+        impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
+        surprise = calculate_surprise(actual, forecast)
 
-            msg = (
-                f"📊 *{e['headline']}* ({e['currency']})\n\n"
-                f"Actual: {actual}\n"
-                f"Forecast: {forecast or 'N/D'}\n"
-                f"Previous: {e.get('previous') or 'N/D'}\n"
-                f"Surprise: {round(surprise, 2)}%\n"
-                f"Impact: {impact_label}"
-            )
+        msg = (
+            f"📊 *{e['headline']}* ({e['currency']})\n\n"
+            f"Actual: {actual or 'N/D'}\n"
+            f"Forecast: {forecast or 'N/D'}\n"
+            f"Previous: {e.get('previous') or 'N/D'}\n"
+            f"Surprise: {round(surprise, 2) if surprise else 0}%\n\n"
+            f"Impact: {impact_label}"
+        )
 
-            await application.bot.send_message(
-                chat_id=CHAT_ID,
-                text=msg,
-                parse_mode="Markdown"
-            )
+        await application.bot.send_message(
+            chat_id=CHAT_ID,
+            text=msg,
+            parse_mode="Markdown"
+        )
 
-            notified_events.add(news_id)
+        notified_events.add(news_id)
 
 # -----------------------------
 # Scheduler (Render usa UTC)
