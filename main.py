@@ -1,12 +1,9 @@
 import os
 import asyncio
-from threading import Thread
-from datetime import datetime
-import pytz
 import feedparser
-from telegram import Bot
+from deep_translator import GoogleTranslator
 from flask import Flask
-from impact_logic import evaluate_impact
+from telegram import Bot
 
 # ==============================
 # ENV VARS
@@ -29,101 +26,79 @@ app = Flask(__name__)
 def home():
     return "Bot attivo ✅"
 
-def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
+# ==============================
+# RSS ECONOMY NEWS
+# ==============================
+ECONOMY_RSS_URL = "https://www.investing.com/rss/news_25.rss"  # Economy News RSS
 
-# ==============================
-# GLOBAL STATE
-# ==============================
-sent_events = {}
+sent_items = set()
 
-# ==============================
-# FETCH RSS ECONOMIC INDICATORS
-# ==============================
-RSS_ECONOMIC_INDICATORS = "https://www.investing.com/economic-calendar/Service/Rss.ashx?timeZone=11"
+async def fetch_economy_news():
+    feed = feedparser.parse(ECONOMY_RSS_URL)
+    return feed.entries
 
-def fetch_economic_indicators():
-    feed = feedparser.parse(RSS_ECONOMIC_INDICATORS)
-    events = []
-    for entry in feed.entries:
-        # Solo High Impact USD/EUR
-        impact = getattr(entry, "impact", "").lower()
-        currency = getattr(entry, "currency", "")
-        if impact != "high" or currency not in ["USD", "EUR"]:
+async def send_economy_news():
+    entries = await fetch_economy_news()
+
+    for entry in entries:
+        # Evita doppioni
+        if entry.id in sent_items:
             continue
 
-        previous = getattr(entry, "previous", "-")
-        forecast = getattr(entry, "forecast", "-")
-        actual = getattr(entry, "actual", "-")
-        event_time = getattr(entry, "time", "??:??")
+        title = entry.get("title", "")
+        link = entry.get("link", "")
+        published = entry.get("published", "")
 
-        events.append({
-            "id": entry.id,
-            "name": entry.title,
-            "currency": currency,
-            "time": event_time,
-            "previous": previous,
-            "forecast": forecast,
-            "actual": actual
-        })
-    return events
+        # Traduzione in italiano
+        try:
+            title_it = GoogleTranslator(source='auto', target='it').translate(title)
+        except Exception:
+            title_it = title  # fallback se Google Translator fallisce
 
-# ==============================
-# SEND TELEGRAM
-# ==============================
-async def send_message_test(text):
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=text)
-        print("[SENT] ", text)
-    except Exception as e:
-        print("[TELEGRAM ERROR]", e)
+        message = (
+            f"📰 Economia News\n"
+            f"{title_it}\n"
+            f"🕒 {published}\n"
+            f"🔗 {link}"
+        )
 
-async def send_economic_indicators():
-    events = fetch_economic_indicators()
-    if not events:
-        await send_message_test("⚪ Nessun high impact USD/EUR trovato nel feed")
-        return
-
-    for event in events:
-        event_id = event["id"]
-        prev_state = sent_events.get(event_id, {})
-
-        if not prev_state or prev_state.get("actual") != event["actual"]:
-            actual = event["actual"] if event["actual"] else "-"
-            forecast = event["forecast"] if event["forecast"] else "-"
-            previous = event["previous"] if event["previous"] else "-"
-
-            if actual != "-" and forecast != "-":
-                label, score = evaluate_impact(event["name"], actual, forecast)
-            else:
-                label, score = "⚪ Neutro", 0
-
-            message = (
-                f"📊 {event['name']} ({event['currency']})\n"
-                f"🕒 {event['time']} UTC\n"
-                f"Previous: {previous}\n"
-                f"Forecast: {forecast}\n"
-                f"Actual: {actual}\n"
-                f"Impatto: {label}"
-            )
-
-            await send_message_test(message)
-            sent_events[event_id] = event
+        try:
+            await bot.send_message(chat_id=CHAT_ID, text=message)
+            sent_items.add(entry.id)
+            print(f"[SENT] {title}")
+        except Exception as e:
+            print("[TELEGRAM ERROR]", e)
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
     # Messaggio di startup
-    await send_message_test("🚀 Bot avviato correttamente")
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot Economy News avviato correttamente")
+        print("[DEBUG] Messaggio di startup inviato")
+    except Exception as e:
+        print("[TELEGRAM ERROR] Startup:", e)
 
     while True:
-        await send_economic_indicators()
-        await asyncio.sleep(300)  # ogni 5 minuti
+        try:
+            await send_economy_news()
+        except Exception as e:
+            print("[LOOP ERROR]", e)
+
+        await asyncio.sleep(300)  # controlla ogni 5 minuti
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
+    from threading import Thread
+
+    # Avvia Flask in background
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
+
     Thread(target=run_flask).start()
+
+    # Avvia scheduler
     asyncio.run(scheduler())
