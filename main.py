@@ -6,7 +6,7 @@ from flask import Flask
 from telegram import Bot
 from impact_logic import evaluate_impact
 import feedparser
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 # ==============================
 # ENV VARS
@@ -19,7 +19,7 @@ if not BOT_TOKEN or not CHAT_ID:
     raise ValueError("BOT_TOKEN o CHAT_ID non impostati")
 
 bot = Bot(token=BOT_TOKEN)
-translator = Translator()
+translator = GoogleTranslator(source='en', target='it')
 
 # ==============================
 # FLASK
@@ -34,7 +34,7 @@ def home():
 # GLOBAL STATE
 # ==============================
 sent_daily = set()
-sent_weekly = dict()  # key=id, value=dict con dati già inviati
+sent_weekly = dict()
 
 # ==============================
 # RSS URL
@@ -99,9 +99,14 @@ async def send_daily_news():
         if e["id"] in sent_daily:
             continue
 
-        # Traduzione titolo e summary in italiano
-        titolo_it = translator.translate(e["title"], src='en', dest='it').text
-        summary_it = translator.translate(e.get("summary",""), src='en', dest='it').text
+        # Traduzione titolo e summary
+        try:
+            titolo_it = translator.translate(e["title"])
+            summary_it = translator.translate(e.get("summary",""))
+        except Exception as ex:
+            print("[TRANSLATION ERROR]", ex)
+            titolo_it = e["title"]
+            summary_it = e.get("summary","")
 
         msg = f"📰 {titolo_it}\n{summary_it}\n🔗 {e['link']}"
 
@@ -121,8 +126,12 @@ async def send_weekly_indicators():
         actual = e.get("actual", "-") or prev_data["actual"]
         label, score = evaluate_impact(e["name"], actual, e.get("forecast", "-"))
 
-        # Traduzione nome indicatore in italiano
-        nome_it = translator.translate(e['name'], src='en', dest='it').text
+        # Traduzione nome indicatore
+        try:
+            nome_it = translator.translate(e['name'])
+        except Exception as ex:
+            print("[TRANSLATION ERROR]", ex)
+            nome_it = e['name']
 
         msg = (
             f"📊 {nome_it}\n"
@@ -144,7 +153,7 @@ async def send_weekly_indicators():
             print("[TELEGRAM ERROR]", ex)
 
 # ==============================
-# SCHEDULER (VERSIONE TEST)
+# SCHEDULER TEST
 # ==============================
 async def scheduler():
     # Messaggio di startup
@@ -153,15 +162,15 @@ async def scheduler():
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
 
-    # --- INVIO IMMEDIATO PER TEST ---
+    # Invio immediato per test
     print("[DEBUG] Invio news giornaliere tradotte...")
     await send_daily_news()
     print("[DEBUG] Invio indicatori settimanali tradotti...")
     await send_weekly_indicators()
 
-    # Loop normale opzionale
+    # Loop opzionale
     while True:
-        await asyncio.sleep(3600)  # ogni ora
+        await asyncio.sleep(3600)
 
 # ==============================
 # MAIN
