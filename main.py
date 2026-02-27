@@ -23,12 +23,15 @@ def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"  # Endpoint reale RapidAPI
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com"  # <--- CORRETTO
+        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com"
     }
-    response = requests.get(url, headers=headers)
-    data = response.json()
-    return data.get("events", [])
-    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+    except Exception as e:
+        print("Errore fetch_events:", e)
+        return []
+
     events = []
     for item in data.get("events", []):
         currency = item.get("currency")
@@ -38,8 +41,8 @@ def fetch_events():
     return events
 
 def format_event(event):
-    dt = event.get("date") or ""
-    title = event.get("title") or ""
+    dt = event.get("date") or "–"
+    title = event.get("title") or "–"
     actual = event.get("actual") or "–"
     forecast = event.get("forecast") or "–"
     previous = event.get("previous") or "–"
@@ -48,14 +51,28 @@ def format_event(event):
 def send_daily():
     events = fetch_events()
     if not events:
+        print("⚠️ Nessuna news ad alto impatto disponibile oggi.")
         bot.send_message(chat_id=CHAT_ID, text="⚠️ Nessuna news ad alto impatto disponibile oggi.")
         return
 
+    print(f"Invio {len(events)} eventi su Telegram...")
     for e in events:
         msg = format_event(e)
-        bot.send_message(chat_id=CHAT_ID, text=msg)
+        try:
+            bot.send_message(chat_id=CHAT_ID, text=msg)
+        except Exception as ex:
+            print("Errore invio Telegram:", ex)
 
+# ----------------------
+# Scheduler loop
+# ----------------------
 def scheduler_loop():
+    # Messaggio di avvio
+    try:
+        bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente e in ascolto!")
+    except Exception as ex:
+        print("Errore invio messaggio avvio:", ex)
+
     while True:
         try:
             send_daily()
