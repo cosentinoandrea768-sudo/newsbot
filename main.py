@@ -1,29 +1,36 @@
-import asyncio
 import os
-import threading
+import asyncio
 from datetime import datetime
+from threading import Thread
+
 import pytz
-from flask import Flask
+import requests
+from bs4 import BeautifulSoup
 from telegram import Bot
-import feedparser
-from deep_translator import GoogleTranslator
+
+from impact_logic import evaluate_impact
 
 # ==============================
-# CONFIG
+# ENV VARS
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 PORT = int(os.getenv("PORT", 10000))
 
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("BOT_TOKEN o CHAT_ID non impostati")
+
 bot = Bot(token=BOT_TOKEN)
-translator = GoogleTranslator(source="en", target="it")
-
-RSS_ECONOMY = "https://www.investing.com/rss/news_14.rss"
-RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
 
 # ==============================
-# FLASK SERVER (Render)
+# GLOBAL STATE
 # ==============================
+sent_events = {}
+
+# ==============================
+# FLASK
+# ==============================
+from flask import Flask
 app = Flask(__name__)
 
 @app.route("/")
@@ -31,104 +38,118 @@ def home():
     return "Bot attivo ✅"
 
 # ==============================
-# HELPERS
+# SCRAPING INVESTING
 # ==============================
-def parse_date(entry):
-    try:
-        return datetime(*entry.published_parsed[:6], tzinfo=pytz.utc)
-    except:
-        return datetime.now(pytz.utc)
+INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
 
-def safe_translate(text):
-    try:
-        return translator.translate(text)
-    except:
-        return text
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+}
+
+def fetch_investing_indicators():
+    """
+    Ritorna una lista di eventi high impact USD/EUR
+    con struttura:
+    {
+        "id": event_id,
+        "name": name,
+        "currency": currency,
+        "time": time,
+        "previous": previous,
+        "forecast": forecast,
+        "actual": actual
+    }
+    """
+    response = requests.get(INVESTING_CALENDAR_URL, headers=HEADERS)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    events = []
+
+    # Trova le righe del calendario (qui bisogna adattare il parser secondo il sito)
+    rows = soup.select("tr.js-event-item")
+    for row in rows:
+        impact = row.get("data-impact")
+        currency = row.get("data-currency")
+        if impact != "3" or currency not in ["USD", "EUR"]:
+            continue  # solo High Impact USD/EUR
+
+        event_id = row.get("data-event-id")
+        name = row.get("data-event")
+        time = row.get("data-time")
+        previous = row.get("data-previous", "-")
+        forecast = row.get("data-forecast", "-")
+        actual = row.get("data-actual", "-")
+
+        events.append({
+            "id": event_id,
+            "name": name,
+            "currency": currency,
+            "time": time,
+            "previous": previous,
+            "forecast": forecast,
+            "actual": actual
+        })
+    return events
 
 # ==============================
-# ASYNC BOT LOOP
+# INVIO TELEGRAM
 # ==============================
-async def bot_loop():
-    await asyncio.sleep(5)
+async def send_economic_indicators():
+    events = fetch_investing_indicators()
 
-    # Messaggio avvio
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente (TEST MODE)")
-    except Exception as e:
-        print("Errore startup:", e)
+    for event in events:
+        event_id = event["id"]
+        prev_state = sent_events.get(event_id, {})
 
+        # Se non inviato prima o se i dati actual sono cambiati
+        if not prev_state or prev_state.get("actual") != event["actual"]:
+            actual = event["actual"] if event["actual"] else "-"
+            forecast = event["forecast"] if event["forecast"] else "-"
+            previous = event["previous"] if event["previous"] else "-"
+
+            # Calcola impatto solo se actual disponibile
+            if actual != "-" and forecast != "-":
+                label, score = evaluate_impact(event["name"], actual, forecast)
+            else:
+                label, score = "⚪ Neutro", 0
+
+            message = (
+                f"📊 {event['name']} ({event['currency']})\n"
+                f"🕒 {event['time']} UTC\n"
+                f"Previous: {previous}\n"
+                f"Forecast: {forecast}\n"
+                f"Actual: {actual}\n"
+                f"Impatto: {label}"
+            )
+
+            try:
+                await bot.send_message(chat_id=CHAT_ID, text=message)
+                sent_events[event_id] = event
+                print(f"[SENT] {event['name']}")
+            except Exception as e:
+                print("[TELEGRAM ERROR]", e)
+
+# ==============================
+# SCHEDULER
+# ==============================
+async def scheduler():
     while True:
-        print("===================================")
-        print("Controllo RSS...")
+        try:
+            await send_economic_indicators()
+        except Exception as e:
+            print("[LOOP ERROR]", e)
 
-        # =====================================
-        # ECONOMY NEWS TEST
-        # =====================================
-        print("Controllo Economy News...")
-        feed_news = feedparser.parse(RSS_ECONOMY)
-        print("News trovate:", len(feed_news.entries))
-
-        for item in feed_news.entries[:3]:
-            title = safe_translate(item.title)
-            date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
-
-            msg = (
-                f"📰 *ECONOMY NEWS TEST*\n\n"
-                f"{title}\n"
-                f"🕒 {date}\n\n"
-                f"🔗 {item.link}"
-            )
-
-            try:
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=msg,
-                    parse_mode="Markdown"
-                )
-                await asyncio.sleep(1.5)
-            except Exception as e:
-                print("Errore news:", e)
-
-        # =====================================
-        # ECONOMIC INDICATORS TEST
-        # =====================================
-        print("Controllo Economic Indicators...")
-        feed_ind = feedparser.parse(RSS_INDICATORS)
-        print("Indicatori trovati:", len(feed_ind.entries))
-
-        for item in feed_ind.entries[:3]:
-            title = safe_translate(item.title)
-            date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
-
-            msg = (
-                f"📊 *INDICATOR NEWS TEST*\n\n"
-                f"{title}\n"
-                f"🕒 {date}\n\n"
-                f"🔗 {item.link}"
-            )
-
-            try:
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=msg,
-                    parse_mode="Markdown"
-                )
-                await asyncio.sleep(1.5)
-            except Exception as e:
-                print("Errore indicatori:", e)
-
-        print("Attendo 10 minuti...\n")
-        await asyncio.sleep(600)
-
-# ==============================
-# THREAD RUNNER
-# ==============================
-def start_async_loop():
-    asyncio.run(bot_loop())
+        await asyncio.sleep(300)  # controlla ogni 5 minuti
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
-    threading.Thread(target=start_async_loop).start()
-    app.run(host="0.0.0.0", port=PORT)
+    # Avvia Flask in background
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
+
+    Thread(target=run_flask).start()
+
+    # Avvia scheduler
+    asyncio.run(scheduler())
