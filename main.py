@@ -38,6 +38,12 @@ def parse_rss_date(datestr):
     except:
         return datetime.now(pytz.utc)
 
+async def safe_translate(text):
+    try:
+        return translator.translate(text)
+    except:
+        return text
+
 # ==============================
 # FETCH NEWS
 # ==============================
@@ -85,17 +91,13 @@ async def fetch_indicators():
     return events
 
 # ==============================
-# SEND NEWS
+# INVIO MESSAGGI
 # ==============================
 async def send_daily_news():
     events = await fetch_daily_news()
     for e in events:
-        try:
-            titolo_it = translator.translate(e["title"])
-            summary_it = translator.translate(e.get("summary",""))
-        except:
-            titolo_it = e["title"]
-            summary_it = e.get("summary","")
+        titolo_it = await safe_translate(e["title"])
+        summary_it = await safe_translate(e.get("summary",""))
         msg = (
             f"📰 {titolo_it}\n"
             f"🕒 Pubblicato: {e['pub_date']}\n"
@@ -107,19 +109,16 @@ async def send_daily_news():
                 await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
             else:
                 await bot.send_message(chat_id=CHAT_ID, text=msg)
-            await asyncio.sleep(1.5)  # Delay per evitare flood
+            await asyncio.sleep(1.5)  # delay per evitare flood
         except Exception as ex:
-            print("[TELEGRAM ERROR]", ex)
+            print("[TELEGRAM ERROR NEWS]", ex)
 
 async def send_indicators():
     events = await fetch_indicators()
     for e in events:
         actual = e.get("actual","-")
         label, score = evaluate_impact(e["name"], actual, e.get("forecast","-"))
-        try:
-            nome_it = translator.translate(e["name"])
-        except:
-            nome_it = e["name"]
+        nome_it = await safe_translate(e["name"])
         msg = (
             f"📊 {nome_it}\n"
             f"🕒 Orario uscita: {e['pub_date'].strftime('%Y-%m-%d %H:%M UTC')}\n"
@@ -130,19 +129,18 @@ async def send_indicators():
         )
         try:
             await bot.send_message(chat_id=CHAT_ID, text=msg)
-            await asyncio.sleep(1.5)  # Delay per evitare flood
+            await asyncio.sleep(1.5)  # delay per evitare flood
         except Exception as ex:
-            print("[TELEGRAM ERROR]", ex)
+            print("[TELEGRAM ERROR INDICATORS]", ex)
 
 # ==============================
-# SCHEDULER TEST
+# SCHEDULER
 # ==============================
 async def scheduler():
-    # Messaggio di startup
     try:
         await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
     except Exception as e:
-        print("[TELEGRAM ERROR] Startup:", e)
+        print("[TELEGRAM ERROR STARTUP]", e)
 
     while True:
         try:
@@ -150,7 +148,7 @@ async def scheduler():
             await send_indicators()
         except Exception as e:
             print("[LOOP ERROR]", e)
-        await asyncio.sleep(600)  # Controlla ogni 10 minuti
+        await asyncio.sleep(600)  # controllo ogni 10 minuti
 
 # ==============================
 # MAIN
