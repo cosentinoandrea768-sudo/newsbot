@@ -29,6 +29,9 @@ app = Flask(__name__)
 def home():
     return "Bot attivo ✅"
 
+def run_flask():
+    app.run(host="0.0.0.0", port=PORT)
+
 # ==============================
 # GLOBAL STATE
 # ==============================
@@ -68,8 +71,19 @@ def fetch_economic_indicators():
 # ==============================
 # SEND TELEGRAM
 # ==============================
+async def send_message_test(text):
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text)
+        print("[SENT] ", text)
+    except Exception as e:
+        print("[TELEGRAM ERROR]", e)
+
 async def send_economic_indicators():
     events = fetch_economic_indicators()
+    if not events:
+        await send_message_test("⚪ Nessun high impact USD/EUR trovato nel feed")
+        return
+
     for event in events:
         event_id = event["id"]
         prev_state = sent_events.get(event_id, {})
@@ -79,7 +93,6 @@ async def send_economic_indicators():
             forecast = event["forecast"] if event["forecast"] else "-"
             previous = event["previous"] if event["previous"] else "-"
 
-            # Calcola impatto solo se actual disponibile
             if actual != "-" and forecast != "-":
                 label, score = evaluate_impact(event["name"], actual, forecast)
             else:
@@ -94,33 +107,23 @@ async def send_economic_indicators():
                 f"Impatto: {label}"
             )
 
-            try:
-                await bot.send_message(chat_id=CHAT_ID, text=message)
-                sent_events[event_id] = event
-                print(f"[SENT] {event['name']}")
-            except Exception as e:
-                print("[TELEGRAM ERROR]", e)
+            await send_message_test(message)
+            sent_events[event_id] = event
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
+    # Messaggio di startup
+    await send_message_test("🚀 Bot avviato correttamente")
+
     while True:
-        try:
-            await send_economic_indicators()
-        except Exception as e:
-            print("[LOOP ERROR]", e)
+        await send_economic_indicators()
         await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
-    # Avvia Flask in background
-    def run_flask():
-        app.run(host="0.0.0.0", port=PORT)
-
     Thread(target=run_flask).start()
-
-    # Avvia scheduler
     asyncio.run(scheduler())
