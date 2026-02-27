@@ -62,21 +62,18 @@ def fetch_events():
     events = []
     ALWAYS_NOTIFY = ["PPI", "Core PPI", "CPI", "Non-Farm Payrolls"]
 
-    # Aggiorna qui il ciclo se l'API restituisce la lista direttamente o dentro un campo
-    # Per esempio: data.get("events", []) o data.get("calendar", [])
-    for item in data.get("events", []):  # controlla il campo corretto con DEBUG
+    for item in data:  # <-- data è già una lista
         currency = item.get("currency")
         if currency not in ["USD", "EUR"]:
             continue
 
-        headline = item.get("title") or item.get("event")
+        headline = item.get("name")  # nella nuova API il campo si chiama "name"
         if not headline:
             continue
 
         impact_value = str(item.get("impact", "")).lower()
         ts = int(datetime.now(TIMEZONE).timestamp())
 
-        # Notifica tutti high impact + eventi sempre importanti
         if not (impact_value == "high" or any(k.lower() in headline.lower() for k in ALWAYS_NOTIFY)):
             continue
 
