@@ -1,46 +1,22 @@
 import os
+import json
 import asyncio
-import schedule
+from datetime import datetime, timezone, timedelta
 import requests
-from datetime import datetime
-import pytz
-from flask import Flask
-from telegram.ext import ApplicationBuilder
-from impact_logic import evaluate_impact, calculate_surprise
+from telegram import Bot
 
-# -----------------------------
-# Variabili ambiente
-# -----------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# ===== CONFIG =====
 API_KEY = os.getenv("RAPIDAPI_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TIMEZONE = pytz.timezone("Europe/Rome")
-notified_events = set()
+# Timezone italiana
+TIMEZONE = timezone(timedelta(hours=1))
 
-# -----------------------------
-# Bot Telegram
-# -----------------------------
-application = ApplicationBuilder().token(BOT_TOKEN).build()
+# ===== BOT INIT =====
+bot = Bot(token=TELEGRAM_TOKEN)
 
-# -----------------------------
-# Flask keep-alive (Render)
-# -----------------------------
-app = Flask("bot")
-
-@app.route("/")
-def home():
-    return "🤖 Bot economico attivo!"
-
-import threading
-threading.Thread(
-    target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
-    daemon=True
-).start()
-
-# -----------------------------
-# Fetch eventi via API ForexFactory
-# -----------------------------
+# ===== FETCH NEWS =====
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
     headers = {
@@ -52,13 +28,21 @@ def fetch_events():
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
-        data = response.json()
+        data = response.json()  # lista di stringhe JSON
     except Exception as e:
         print("Errore API:", e)
         return []
 
     events = []
-    for item in data:
+    ids_seen = set()
+
+    for raw_item in data:
+        try:
+            item = json.loads(raw_item)  # decodifica JSON
+        except:
+            continue
+
+        # Filtra solo high impact USD/EUR
         currency = item.get("currency")
         impact = str(item.get("impact", "")).lower()
         if currency not in ["USD", "EUR"]:
@@ -66,8 +50,8 @@ def fetch_events():
         if impact != "high":
             continue
 
-        # timestamp corretto della news
-        date_str = item.get("date")  # esempio: "2026-02-27 14:30"
+        # Timestamp
+        date_str = item.get("date")
         if date_str:
             try:
                 ts = int(datetime.strptime(date_str, "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE).timestamp())
@@ -77,6 +61,9 @@ def fetch_events():
             ts = int(datetime.now(TIMEZONE).timestamp())
 
         news_id = f"{item.get('name')}_{currency}_{ts}"
+        if news_id in ids_seen:
+            continue
+        ids_seen.add(news_id)
 
         events.append({
             "id": news_id,
@@ -91,112 +78,43 @@ def fetch_events():
     print(f"DEBUG: trovate {len(events)} news high impact USD/EUR oggi")
     return events
 
-# -----------------------------
-# Messaggi daily / weekly
-# -----------------------------
-def format_event_msg(event):
-    date_str = datetime.fromtimestamp(event["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
-    actual = event["actual"] or "N/D"
-    forecast = event["forecast"] or "N/D"
-    previous = event["previous"] or "N/D"
-    return f"{date_str} | {event['headline']} ({event['currency']})\nForecast: {forecast} | Previous: {previous}\n"
+# ===== FORMAT MESSAGGIO TELEGRAM =====
+def format_event_message(event):
+    dt = datetime.fromtimestamp(event["datetime"], tz=TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    actual = event["actual"] if event["actual"] is not None else "-"
+    forecast = event["forecast"] if event["forecast"] is not None else "-"
+    previous = event["previous"] if event["previous"] is not None else "-"
 
+    msg = (
+        f"📰 {event['headline']} ({event['currency']})\n"
+        f"📅 Orario: {dt}\n"
+        f"💡 Forecast: {forecast}\n"
+        f"📊 Previous: {previous}\n"
+        f"🔔 Actual: {actual}\n"
+    )
+    return msg
+
+# ===== INVIO NEWS =====
 async def send_daily():
     events = fetch_events()
-
     if not events:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text="📅 Oggi non ci sono news High Impact USD/EUR."
-        )
+        print("Nessuna news high impact oggi.")
         return
 
-    msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
-    for e in events:
-        msg += format_event_msg(e) + "\n"
+    for event in events:
+        msg = format_event_message(event)
+        try:
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        except Exception as e:
+            print("Errore invio Telegram:", e)
 
-    await application.bot.send_message(
-        chat_id=CHAT_ID,
-        text=msg,
-        parse_mode="Markdown"
-    )
-
-async def send_weekly():
-    events = fetch_events()
-
-    if not events:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text="📆 Questa settimana non ci sono news High Impact USD/EUR."
-        )
-        return
-
-    msg = "📆 *High Impact USD & EUR - Settimana*\n\n"
-    for e in events:
-        msg += format_event_msg(e) + "\n"
-
-    await application.bot.send_message(
-        chat_id=CHAT_ID,
-        text=msg,
-        parse_mode="Markdown"
-    )
-
-# -----------------------------
-# Notifica release con impatto
-# -----------------------------
-async def check_releases():
-    events = fetch_events()
-
-    for e in events:
-        news_id = e["id"]
-        if news_id in notified_events:
-            continue
-
-        actual = e.get("actual")
-        forecast = e.get("forecast")
-
-        impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
-        surprise = calculate_surprise(actual, forecast)
-
-        msg = (
-            f"📊 *{e['headline']}* ({e['currency']})\n\n"
-            f"Actual: {actual or 'N/D'}\n"
-            f"Forecast: {forecast or 'N/D'}\n"
-            f"Previous: {e.get('previous') or 'N/D'}\n"
-            f"Surprise: {round(surprise, 2) if surprise else 0}%\n\n"
-            f"Impact: {impact_label}"
-        )
-
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text=msg,
-            parse_mode="Markdown"
-        )
-
-        notified_events.add(news_id)
-
-# -----------------------------
-# Scheduler (Render usa UTC)
-# -----------------------------
+# ===== SCHEDULER =====
 async def scheduler_loop():
-    await application.bot.send_message(
-        chat_id=CHAT_ID,
-        text="🚀 Bot avviato correttamente"
-    )
-
-    await send_daily()
-    await check_releases()
-
-    schedule.every().day.at("06:00").do(lambda: asyncio.create_task(send_daily()))
-    schedule.every().monday.at("06:00").do(lambda: asyncio.create_task(send_weekly()))
-    schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
-
+    print("🚀 Bot avviato correttamente")
     while True:
-        schedule.run_pending()
-        await asyncio.sleep(30)
+        await send_daily()
+        await asyncio.sleep(300)  # ogni 5 minuti
 
-# -----------------------------
-# Avvio
-# -----------------------------
+# ===== MAIN =====
 if __name__ == "__main__":
     asyncio.run(scheduler_loop())
