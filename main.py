@@ -4,6 +4,7 @@ from flask import Flask
 from telegram import Bot
 import feedparser
 from deep_translator import GoogleTranslator
+from html import unescape
 
 # ==============================
 # ENV VARS
@@ -48,14 +49,21 @@ def fetch_economy_news():
         if news_id in sent_news:
             continue
 
-        # Traduzione in italiano
+        # Traduzione titolo
         title_it = GoogleTranslator(source='auto', target='it').translate(entry.title)
+
+        # Riassunto breve dal feed (description o summary)
+        summary_raw = getattr(entry, "summary", "")
+        summary_text = unescape(summary_raw).replace("<p>", "").replace("</p>", "").strip()
+        summary_it = GoogleTranslator(source='auto', target='it').translate(summary_text) if summary_text else ""
+
         published = getattr(entry, "published", "N/A")
         link = entry.link
 
         news_items.append({
             "id": news_id,
             "title": title_it,
+            "summary": summary_it,
             "published": published,
             "link": link
         })
@@ -73,8 +81,9 @@ async def send_economy_news():
 
     for item in news_items:
         message = (
-            f"📰 BitPath News by Investing.com\n"  # Modifica qui il titolo
+            f"📰 BitPath News by Investing.com\n"
             f"{item['title']}\n"
+            f"{item['summary']}\n"  # Riassunto tradotto
             f"🕒 {item['published']}\n"
             f"🔗 {item['link']}"
         )
