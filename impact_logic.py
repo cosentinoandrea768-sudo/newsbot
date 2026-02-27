@@ -1,14 +1,14 @@
 # -----------------------------
-# impact_logic.py
+# impact_logic.py (robusta)
 # -----------------------------
 
 # --- Funzioni di utilità ---
 def parse_number(value):
     """
     Converte una stringa numerica in float,
-    gestendo %, K (migliaia) e M (milioni).
+    gestendo %, K (migliaia), M (milioni) e valori mancanti "-".
     """
-    if value is None:
+    if value is None or value == "-" or value == "":
         return None
     try:
         value = str(value).replace("%", "").replace(",", "").strip()
@@ -24,6 +24,7 @@ def parse_number(value):
 def calculate_surprise(actual, forecast):
     """
     Calcola la sorpresa in % tra actual e forecast.
+    Restituisce 0 se uno dei due valori è None o forecast=0.
     """
     actual = parse_number(actual)
     forecast = parse_number(forecast)
@@ -46,12 +47,13 @@ POSITIVE_WHEN_LOWER = [
 # --- Funzione principale ---
 def evaluate_impact(event_name, actual, forecast):
     """
-    Valuta l'impatto di un evento economico:
-    restituisce una label (🟢/🔴/⚪) e un punteggio numerico.
+    Valuta l'impatto di un evento economico.
+    Restituisce una label (🟢/🔴/⚪) e un punteggio numerico.
     """
     actual_num = parse_number(actual)
     forecast_num = parse_number(forecast)
 
+    # Se il dato non è ancora disponibile, ritorna Neutro
     if actual_num is None or forecast_num is None:
         return "⚪ Neutro", 0
 
@@ -68,7 +70,7 @@ def evaluate_impact(event_name, actual, forecast):
     # Determina direzione dell'impatto
     if category == "higher":
         direction = 1 if actual_num > forecast_num else -1
-    else:  # category == "lower"
+    else:
         direction = 1 if actual_num < forecast_num else -1
 
     if actual_num == forecast_num:
