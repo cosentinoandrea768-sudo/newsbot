@@ -9,7 +9,7 @@ from deep_translator import GoogleTranslator
 from impact_logic import evaluate_impact
 
 # ==============================
-# CONFIG (usa variabili Render!)
+# CONFIG
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -52,15 +52,11 @@ async def send_economy_news():
     feed = feedparser.parse(RSS_ECONOMY)
     print("News trovate:", len(feed.entries))
 
-    for item in feed.entries[:3]:  # solo 3 per test
+    for item in feed.entries[:3]:
         title = safe_translate(item.title)
         date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
 
-        msg = (
-            f"📰 {title}\n"
-            f"🕒 {date}\n"
-            f"🔗 {item.link}"
-        )
+        msg = f"📰 {title}\n🕒 {date}\n🔗 {item.link}"
 
         try:
             await bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -78,7 +74,6 @@ async def send_indicators():
     for item in feed.entries:
         title = item.title
 
-        # filtro High Impact + USD/EUR
         if "[USD]" not in title and "[EUR]" not in title:
             continue
         if "High Impact" not in title:
@@ -109,10 +104,10 @@ async def send_indicators():
             print("Errore indicatori:", e)
 
 # ==============================
-# BACKGROUND LOOP
+# BACKGROUND TASK
 # ==============================
 async def background_loop():
-    await asyncio.sleep(5)  # aspetta che Flask sia pronto
+    await asyncio.sleep(5)
 
     try:
         await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
@@ -123,12 +118,14 @@ async def background_loop():
         print("Controllo RSS...")
         await send_economy_news()
         await send_indicators()
-        await asyncio.sleep(600)  # ogni 10 minuti
+        await asyncio.sleep(600)
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(background_loop())
-    app.run(host="0.0.0.0", port=PORT)
+    async def main():
+        asyncio.create_task(background_loop())
+        app.run(host="0.0.0.0", port=PORT)
+
+    asyncio.run(main())
