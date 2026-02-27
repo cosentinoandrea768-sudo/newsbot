@@ -14,7 +14,7 @@ import threading
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI ForexFactory
+API_KEY = os.getenv("RAPIDAPI_KEY")
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
@@ -33,13 +33,14 @@ app = Flask("bot")
 def home():
     return "🤖 Bot economico attivo!"
 
+# Flask in thread separato per Render
 threading.Thread(
     target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
     daemon=True
 ).start()
 
 # -----------------------------
-# Fetch eventi filtrati High Impact USD/EUR
+# Fetch eventi USD/EUR ad alto impatto
 # -----------------------------
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
@@ -48,24 +49,24 @@ def fetch_events():
         "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = "{}"
+    payload = {}
 
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=10)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
-        # DEBUG primi eventi
-        print("DEBUG API RESPONSE:", json.dumps(data[:5], indent=2))
+        print("DEBUG API RESPONSE (prime 5 news):", json.dumps(data[:5], indent=2))
     except Exception as e:
         print("Errore API:", e)
         return []
 
     events = []
-    for item in data:
+    for item in data:  # iteriamo direttamente sulla lista restituita dall'API
         currency = item.get("currency")
         impact_value = str(item.get("impact", "")).lower()
+
         if currency not in ["USD", "EUR"]:
             continue
-        if impact_value != "high":
+        if impact_value != "high":  # solo news rosse
             continue
 
         ts = int(datetime.now(TIMEZONE).timestamp())
@@ -88,10 +89,7 @@ def fetch_events():
 async def send_daily():
     events = fetch_events()
     if not events:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text="📅 Nessuna news High Impact USD/EUR disponibile oggi."
-        )
+        await application.bot.send_message(chat_id=CHAT_ID, text="📅 Oggi non ci sono news High Impact USD/EUR.")
         return
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
@@ -107,14 +105,46 @@ async def send_daily():
     await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
 # -----------------------------
-# Scheduler loop
+# Notifica release con impatto
+# -----------------------------
+async def check_releases():
+    events = fetch_events()
+    for e in events:
+        news_id = e["id"]
+        if news_id in notified_events:
+            continue
+
+        actual = e.get("actual")
+        forecast = e.get("forecast")
+        if actual is None:
+            continue
+
+        # Qui puoi integrare la tua logica di calcolo impact / surprise
+        impact_label = "High"  # placeholder
+        surprise = "N/D"        # placeholder
+
+        msg = (
+            f"📊 *{e['headline']}* ({e['currency']})\n\n"
+            f"Actual: {actual}\n"
+            f"Forecast: {forecast or 'N/D'}\n"
+            f"Surprise: {surprise}\n\n"
+            f"Impact: {impact_label}"
+        )
+
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+        notified_events.add(news_id)
+
+# -----------------------------
+# Scheduler
 # -----------------------------
 async def scheduler_loop():
     print("🚀 Bot avviato correttamente")
     await application.bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente")
     await send_daily()
+    await check_releases()
 
-    schedule.every(5).minutes.do(lambda: asyncio.create_task(send_daily()))
+    schedule.every().day.at("06:00").do(lambda: asyncio.create_task(send_daily()))
+    schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
     while True:
         schedule.run_pending()
