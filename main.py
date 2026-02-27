@@ -1,77 +1,186 @@
 import os
-import asyncio
 import json
+import asyncio
+import requests
 import pytz
 from datetime import datetime
 from flask import Flask
 from telegram import Bot
-from telegram.ext import ApplicationBuilder
-import requests
-from impact_logic import evaluate_impact, calculate_surprise
+from impact_logic import evaluate_impact
 
-# -----------------------------
-# Config e variabili ambiente
-# -----------------------------
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+# ==============================
+# ENV VARS
+# ==============================
 
-if not RAPIDAPI_KEY or not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("Assicurati che le env vars RAPIDAPI_KEY, BOT_TOKEN e CHAT_ID siano settate.")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+PORT = int(os.getenv("PORT", 10000))
 
-# -----------------------------
-# Flask app per Render
-# -----------------------------
+if not RAPIDAPI_KEY:
+    raise ValueError("RAPIDAPI_KEY non impostata")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN non impostato")
+if not CHAT_ID:
+    raise ValueError("CHAT_ID non impostato")
+
+bot = Bot(token=BOT_TOKEN)
+
+# ==============================
+# FLASK (Render richiede porta)
+# ==============================
+
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot running!"
+    return "Bot attivo ✅"
 
-# -----------------------------
-# Funzioni bot
-# -----------------------------
-async def send_daily():
-    events = fetch_events()
-    bot = Bot(token=BOT_TOKEN)
-    for event in events:
-        name = event.get("event")
-        actual = event.get("actual")
-        forecast = event.get("forecast")
-        label, score = evaluate_impact(name, actual, forecast)
-        message = f"{name}\nActual: {actual}\nForecast: {forecast}\nImpact: {label} ({score})"
-        await bot.send_message(chat_id=CHAT_ID, text=message)
+# ==============================
+# GLOBAL STATE (anti-duplicati)
+# ==============================
+
+sent_events = set()
+
+# ==============================
+# FETCH EVENTS DA RAPIDAPI
+# ==============================
 
 def fetch_events():
-    url = "https://mcp.rapidapi.com/get_list"
+    url = "https://forexfactory1.p.rapidapi.com/get_list"
+
     headers = {
-        "x-api-host": "forexfactory1.p.rapidapi.com",
-        "x-api-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "forexfactory1.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
         "Content-Type": "application/json"
     }
-    body = {"some_param": "value"}  # eventuale payload richiesto dalla tua API
-    response = requests.post(url, headers=headers, json=body)
-    data = response.json()
-    
-    # Assicuriamoci di avere una lista di dict
+
+    try:
+        response = requests.post(url, headers=headers, json={}, timeout=15)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        print("[API ERROR]", e)
+        return []
+
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        print("[JSON ERROR] Risposta non valida")
+        print(response.text)
+        return []
+
+    description = data.get("description", [])
+    graph = data.get("graph", [])
+
+    graph_map = {g.get("dateline"): g for g in graph if isinstance(g, dict)}
+
     events = []
-    for item in data.get("events", []):
-        if isinstance(item, dict):
-            events.append(item)
+
+    for item in description:
+        if not isinstance(item, dict):
+            continue
+
+        currency = item.get("currency")
+        impact = item.get("impact")
+        dateline = item.get("next_dateline")
+
+        # Filtro solo USD / EUR
+        if currency not in ["USD", "EUR"]:
+            continue
+
+        # Solo High Impact
+        if impact != "High":
+            continue
+
+        # Solo oggi
+        if not dateline:
+            continue
+
+        try:
+            event_time = datetime.fromisoformat(dateline.replace("Z", "+00:00"))
+        except Exception:
+            continue
+
+        today = datetime.now(pytz.utc).date()
+        if event_time.date() != today:
+            continue
+
+        # Prende actual / forecast dal graph se esiste
+        graph_data = graph_map.get(dateline, {})
+        actual = graph_data.get("actual_formatted") or graph_data.get("actual")
+        forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
+
+        event = {
+            "id": f"{item.get('name')}_{dateline}",
+            "name": item.get("name"),
+            "currency": currency,
+            "actual": actual,
+            "forecast": forecast,
+            "time": event_time.strftime("%H:%M UTC")
+        }
+
+        events.append(event)
+
     return events
 
-async def scheduler_loop():
-    while True:
-        await send_daily()
-        await asyncio.sleep(60*60)  # controlla ogni ora
+# ==============================
+# INVIO TELEGRAM
+# ==============================
 
-# -----------------------------
-# Avvio
-# -----------------------------
+async def send_events():
+    events = fetch_events()
+
+    if not events:
+        print("[INFO] Nessuna news oggi")
+        return
+
+    print(f"[INFO] Eventi trovati: {len(events)}")
+
+    for event in events:
+
+        if event["id"] in sent_events:
+            continue
+
+        label, score = evaluate_impact(
+            event["name"],
+            event["actual"],
+            event["forecast"]
+        )
+
+        message = (
+            f"📊 {event['currency']} HIGH IMPACT\n"
+            f"{event['name']}\n"
+            f"🕒 {event['time']}\n"
+            f"Actual: {event['actual']}\n"
+            f"Forecast: {event['forecast']}\n"
+            f"Impact Score: {score} ({label})"
+        )
+
+        try:
+            await bot.send_message(chat_id=CHAT_ID, text=message)
+            sent_events.add(event["id"])
+            print(f"[SENT] {event['name']}")
+        except Exception as e:
+            print("[TELEGRAM ERROR]", e)
+
+# ==============================
+# SCHEDULER ROBUSTO
+# ==============================
+
+async def scheduler():
+    while True:
+        try:
+            await send_events()
+        except Exception as e:
+            print("[LOOP ERROR]", e)
+
+        await asyncio.sleep(300)  # controlla ogni 5 minuti
+
+# ==============================
+# MAIN
+# ==============================
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render richiede PORT
-    # Avvio Flask
-    from threading import Thread
-    Thread(target=lambda: app.run(host="0.0.0.0", port=port)).start()
-    # Avvio bot loop
-    asyncio.run(scheduler_loop())
+    loop = asyncio.get_event_loop()
+    loop.create_task(scheduler())
+    app.run(host="0.0.0.0", port=PORT)
