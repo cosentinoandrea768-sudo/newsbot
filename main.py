@@ -7,7 +7,6 @@ from flask import Flask
 from telegram import Bot
 import feedparser
 from deep_translator import GoogleTranslator
-from impact_logic import evaluate_impact
 
 # ==============================
 # CONFIG
@@ -23,7 +22,7 @@ RSS_ECONOMY = "https://www.investing.com/rss/news_14.rss"
 RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
 
 # ==============================
-# FLASK SERVER (per Render)
+# FLASK SERVER (Render)
 # ==============================
 app = Flask(__name__)
 
@@ -52,9 +51,9 @@ def safe_translate(text):
 async def bot_loop():
     await asyncio.sleep(5)
 
-    # Messaggio di avvio
+    # Messaggio avvio
     try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente (TEST MODE)")
     except Exception as e:
         print("Errore startup:", e)
 
@@ -66,7 +65,6 @@ async def bot_loop():
         # ECONOMY NEWS TEST
         # =====================================
         print("Controllo Economy News...")
-
         feed_news = feedparser.parse(RSS_ECONOMY)
         print("News trovate:", len(feed_news.entries))
 
@@ -75,7 +73,7 @@ async def bot_loop():
             date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
 
             msg = (
-                f"📰 *ECONOMY NEWS*\n\n"
+                f"📰 *ECONOMY NEWS TEST*\n\n"
                 f"{title}\n"
                 f"🕒 {date}\n\n"
                 f"🔗 {item.link}"
@@ -95,38 +93,18 @@ async def bot_loop():
         # ECONOMIC INDICATORS TEST
         # =====================================
         print("Controllo Economic Indicators...")
-
         feed_ind = feedparser.parse(RSS_INDICATORS)
         print("Indicatori trovati:", len(feed_ind.entries))
 
-        for item in feed_ind.entries:
-            title = item.title
-
-            # Filtro valuta
-            if "[USD]" not in title and "[EUR]" not in title:
-                continue
-
-            # Filtro impatto
-            if "High Impact" not in title:
-                continue
-
-            title_it = safe_translate(title)
+        for item in feed_ind.entries[:3]:
+            title = safe_translate(item.title)
             date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
 
-            previous = getattr(item, "previous", "-")
-            forecast = getattr(item, "forecast", "-")
-            actual = getattr(item, "actual", "-")
-
-            impact, _ = evaluate_impact(title, actual, forecast)
-
             msg = (
-                f"📊 *ECONOMIC INDICATOR*\n\n"
-                f"🏷 {title_it}\n"
+                f"📊 *INDICATOR NEWS TEST*\n\n"
+                f"{title}\n"
                 f"🕒 {date}\n\n"
-                f"Previous: {previous}\n"
-                f"Forecast: {forecast}\n"
-                f"Actual: {actual}\n\n"
-                f"📈 Impatto stimato: {impact}"
+                f"🔗 {item.link}"
             )
 
             try:
