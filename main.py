@@ -1,47 +1,156 @@
+import asyncio
+import os
+import threading
+from datetime import datetime
+import pytz
+from flask import Flask
+from telegram import Bot
+import feedparser
+from deep_translator import GoogleTranslator
+from impact_logic import evaluate_impact
+
 # ==============================
-# INDICATORS
+# CONFIG
 # ==============================
-print("Controllo Economic Indicators...")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+PORT = int(os.getenv("PORT", 10000))
 
-feed = feedparser.parse(RSS_INDICATORS)
-print("Indicatori trovati:", len(feed.entries))
+bot = Bot(token=BOT_TOKEN)
+translator = GoogleTranslator(source="en", target="it")
 
-for item in feed.entries:
-    title = item.title
+RSS_ECONOMY = "https://www.investing.com/rss/news_14.rss"
+RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
 
-    # Filtro valuta
-    if "[USD]" not in title and "[EUR]" not in title:
-        continue
+# ==============================
+# FLASK SERVER (per Render)
+# ==============================
+app = Flask(__name__)
 
-    # Filtro impatto
-    if "High Impact" not in title:
-        continue
+@app.route("/")
+def home():
+    return "Bot attivo ✅"
 
-    title_it = safe_translate(title)
-    date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
-
-    previous = getattr(item, "previous", "-")
-    forecast = getattr(item, "forecast", "-")
-    actual = getattr(item, "actual", "-")
-
-    impact, _ = evaluate_impact(title, actual, forecast)
-
-    msg = (
-        f"📊 *ECONOMIC INDICATOR*\n\n"
-        f"🏷 {title_it}\n"
-        f"🕒 {date}\n\n"
-        f"Previous: {previous}\n"
-        f"Forecast: {forecast}\n"
-        f"Actual: {actual}\n\n"
-        f"📈 Impacto stimato: {impact}"
-    )
-
+# ==============================
+# HELPERS
+# ==============================
+def parse_date(entry):
     try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=msg,
-            parse_mode="Markdown"
-        )
-        await asyncio.sleep(1.5)
+        return datetime(*entry.published_parsed[:6], tzinfo=pytz.utc)
+    except:
+        return datetime.now(pytz.utc)
+
+def safe_translate(text):
+    try:
+        return translator.translate(text)
+    except:
+        return text
+
+# ==============================
+# ASYNC BOT LOOP
+# ==============================
+async def bot_loop():
+    await asyncio.sleep(5)
+
+    # Messaggio di avvio
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
     except Exception as e:
-        print("Errore indicatori:", e)
+        print("Errore startup:", e)
+
+    while True:
+        print("===================================")
+        print("Controllo RSS...")
+
+        # =====================================
+        # ECONOMY NEWS TEST
+        # =====================================
+        print("Controllo Economy News...")
+
+        feed_news = feedparser.parse(RSS_ECONOMY)
+        print("News trovate:", len(feed_news.entries))
+
+        for item in feed_news.entries[:3]:
+            title = safe_translate(item.title)
+            date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
+
+            msg = (
+                f"📰 *ECONOMY NEWS*\n\n"
+                f"{title}\n"
+                f"🕒 {date}\n\n"
+                f"🔗 {item.link}"
+            )
+
+            try:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=msg,
+                    parse_mode="Markdown"
+                )
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                print("Errore news:", e)
+
+        # =====================================
+        # ECONOMIC INDICATORS TEST
+        # =====================================
+        print("Controllo Economic Indicators...")
+
+        feed_ind = feedparser.parse(RSS_INDICATORS)
+        print("Indicatori trovati:", len(feed_ind.entries))
+
+        for item in feed_ind.entries:
+            title = item.title
+
+            # Filtro valuta
+            if "[USD]" not in title and "[EUR]" not in title:
+                continue
+
+            # Filtro impatto
+            if "High Impact" not in title:
+                continue
+
+            title_it = safe_translate(title)
+            date = parse_date(item).strftime("%Y-%m-%d %H:%M UTC")
+
+            previous = getattr(item, "previous", "-")
+            forecast = getattr(item, "forecast", "-")
+            actual = getattr(item, "actual", "-")
+
+            impact, _ = evaluate_impact(title, actual, forecast)
+
+            msg = (
+                f"📊 *ECONOMIC INDICATOR*\n\n"
+                f"🏷 {title_it}\n"
+                f"🕒 {date}\n\n"
+                f"Previous: {previous}\n"
+                f"Forecast: {forecast}\n"
+                f"Actual: {actual}\n\n"
+                f"📈 Impatto stimato: {impact}"
+            )
+
+            try:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=msg,
+                    parse_mode="Markdown"
+                )
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                print("Errore indicatori:", e)
+
+        print("Attendo 10 minuti...\n")
+        await asyncio.sleep(600)
+
+# ==============================
+# THREAD RUNNER
+# ==============================
+def start_async_loop():
+    asyncio.run(bot_loop())
+
+# ==============================
+# MAIN
+# ==============================
+if __name__ == "__main__":
+    threading.Thread(target=start_async_loop).start()
+    app.run(host="0.0.0.0", port=PORT)
