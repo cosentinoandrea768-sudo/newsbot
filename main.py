@@ -40,7 +40,7 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Fetch eventi filtrati High Impact
+# Filtro High Impact USD/EUR
 # -----------------------------
 HIGH_IMPACT_KEYWORDS = ["ppi", "core ppi"]
 
@@ -61,21 +61,28 @@ def fetch_events():
         print("Errore API:", e)
         return []
 
+    today_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
     events = []
     for item in data:
         currency = item.get("currency")
         headline = item.get("name")
         impact_value = str(item.get("impact", "")).lower()
+        release_date = item.get("release_date") or today_str  # fallback
         ts = int(datetime.now(TIMEZONE).timestamp())
 
-        # Filtra solo USD/EUR e High Impact
+        # Filtro: USD/EUR, High Impact, oggi
         if currency not in ["USD", "EUR"]:
             continue
-        if impact_value != "high" and not any(k in headline.lower() for k in HIGH_IMPACT_KEYWORDS):
+        if impact_value != "high":
+            continue
+        if release_date[:10] != today_str:
             continue
 
+        # ID stabile per evitare duplicati
+        news_id = f"{headline}_{currency}_{release_date}"
+
         events.append({
-            "id": item.get("id", f"{headline}_{ts}"),
+            "id": news_id,
             "currency": currency,
             "headline": headline,
             "actual": item.get("actual"),
@@ -93,8 +100,14 @@ def fetch_events():
 async def send_daily():
     events = fetch_events()
     if not events:
-        await application.bot.send_message(chat_id=CHAT_ID, text="📅 Oggi non ci sono news High Impact USD/EUR.")
+        await application.bot.send_message(
+            chat_id=CHAT_ID,
+            text="📅 Oggi non ci sono news High Impact USD/EUR."
+        )
         return
+
+    # Ordina per orario (timestamp)
+    events.sort(key=lambda e: e["datetime"])
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
@@ -132,6 +145,7 @@ async def check_releases():
             f"📊 *{e['headline']}* ({e['currency']})\n\n"
             f"Actual: {actual}\n"
             f"Forecast: {forecast or 'N/D'}\n"
+            f"Previous: {e.get('previous') or 'N/D'}\n"
             f"Surprise: {round(surprise, 2)}%\n\n"
             f"Impact: {impact_label}"
         )
