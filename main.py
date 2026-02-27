@@ -90,11 +90,11 @@ def fetch_events():
 
         print(f"[DEBUG] Checking: {item.get('name')} | {currency} | {impact}")
 
-        # Filtro solo USD / EUR
+        # Solo USD / EUR
         if currency not in ["USD", "EUR"]:
             continue
 
-        # Filtro High Impact robusto
+        # Solo High Impact (robusto)
         if not impact or "High" not in str(impact):
             continue
 
@@ -185,33 +185,27 @@ async def scheduler():
         await asyncio.sleep(300)  # 5 minuti
 
 # ==============================
-# MAIN - EVENT LOOP UNICO
+# MAIN (Render-safe)
 # ==============================
 
 if __name__ == "__main__":
-    from threading import Thread
-
-    # Avvia Flask in thread separato
-    def run_flask():
-        app.run(host="0.0.0.0", port=PORT)
-
-    flask_thread = Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
 
     async def main():
-        # Test Telegram all'avvio
+        # Test Telegram
         try:
             await bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente su Render")
             print("[DEBUG] Startup Telegram OK")
         except Exception as e:
             print("[STARTUP TELEGRAM ERROR]", e)
 
-        # Avvia scheduler come task parallelo
+        # Avvia scheduler
         asyncio.create_task(scheduler())
 
-        # Mantiene vivo il loop
-        while True:
-            await asyncio.sleep(3600)
+        # Avvia Flask in executor (non blocca asyncio)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: app.run(host="0.0.0.0", port=PORT)
+        )
 
     asyncio.run(main())
