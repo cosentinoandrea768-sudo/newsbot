@@ -20,10 +20,14 @@ app = Flask(__name__)
 # Funzioni helper
 # ----------------------
 def fetch_events():
-    url = "https://api.example.com/economic-events"  # Endpoint reale RapidAPI
-    headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": "api.example.com"}
+    url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"  # Endpoint reale RapidAPI
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com"  # <--- CORRETTO
+    }
     response = requests.get(url, headers=headers)
     data = response.json()
+    return data.get("events", [])
     
     events = []
     for item in data.get("events", []):
