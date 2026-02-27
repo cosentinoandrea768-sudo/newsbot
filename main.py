@@ -5,7 +5,6 @@ from flask import Flask
 from telegram import Bot
 import feedparser
 from deep_translator import GoogleTranslator
-from impact_logic import evaluate_impact
 
 # ==============================
 # CONFIG
@@ -49,106 +48,62 @@ async def safe_translate(text):
 # ==============================
 async def fetch_daily_news():
     feed = feedparser.parse(RSS_ECONOMY)
-    today = datetime.now(pytz.utc).date()
-    events = []
-
-    for item in feed.entries:
-        pub_date = parse_rss_date(item.published_parsed)
-        if pub_date.date() != today:
-            continue
-        img_url = None
-        if 'media_content' in item and len(item.media_content) > 0:
-            img_url = item.media_content[0].get('url')
-        events.append({
-            "id": item.link,
-            "title": item.title,
-            "link": item.link,
-            "summary": getattr(item, "summary", ""),
-            "image": img_url,
-            "pub_date": pub_date.strftime("%Y-%m-%d %H:%M UTC")
-        })
-    return events
+    print("[DEBUG] Numero news RSS Economy:", len(feed.entries))
+    return feed.entries
 
 async def fetch_indicators():
     feed = feedparser.parse(RSS_INDICATORS)
-    events = []
-    for item in feed.entries:
-        title = item.title
-        # --- FILTRO HIGH IMPACT e USD/EUR ---
-        if "[USD]" not in title and "[EUR]" not in title:
-            continue
-        if "High Impact" not in title:
-            continue
-        pub_date = parse_rss_date(item.published_parsed)
-        events.append({
-            "id": item.link,
-            "name": title,
-            "pub_date": pub_date,
-            "previous": getattr(item, "previous","-"),
-            "forecast": getattr(item, "forecast","-"),
-            "actual": getattr(item, "actual","-"),
-        })
-    return events
+    print("[DEBUG] Numero news RSS Indicators:", len(feed.entries))
+    return feed.entries
 
 # ==============================
 # INVIO MESSAGGI
 # ==============================
-async def send_daily_news():
-    events = await fetch_daily_news()
-    for e in events:
-        titolo_it = await safe_translate(e["title"])
-        summary_it = await safe_translate(e.get("summary",""))
-        msg = (
-            f"📰 {titolo_it}\n"
-            f"🕒 Pubblicato: {e['pub_date']}\n"
-            f"{summary_it}\n"
-            f"🔗 {e['link']}"
-        )
+async def send_test_messages():
+    # Messaggi di prova
+    for i in range(3):
         try:
-            if e.get("image"):
-                await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
-            else:
-                await bot.send_message(chat_id=CHAT_ID, text=msg)
-            await asyncio.sleep(1.5)  # delay per evitare flood
-        except Exception as ex:
-            print("[TELEGRAM ERROR NEWS]", ex)
+            await bot.send_message(chat_id=CHAT_ID, text=f"🚀 Messaggio di test {i+1}")
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            print("[TEST ERROR]", e)
 
-async def send_indicators():
-    events = await fetch_indicators()
-    for e in events:
-        actual = e.get("actual","-")
-        label, score = evaluate_impact(e["name"], actual, e.get("forecast","-"))
-        nome_it = await safe_translate(e["name"])
-        msg = (
-            f"📊 {nome_it}\n"
-            f"🕒 Orario uscita: {e['pub_date'].strftime('%Y-%m-%d %H:%M UTC')}\n"
-            f"Previous: {e.get('previous','-')}\n"
-            f"Forecast: {e.get('forecast','-')}\n"
-            f"Actual: {actual}\n"
-            f"Impact: {label}"
-        )
+async def send_rss_preview():
+    news = await fetch_daily_news()
+    for item in news[:3]:  # solo prime 3 news per test
+        title = await safe_translate(item.title)
+        pub_date = parse_rss_date(item.published_parsed).strftime("%Y-%m-%d %H:%M UTC")
+        msg = f"📰 {title}\n🕒 Pubblicato: {pub_date}\n🔗 {item.link}"
         try:
             await bot.send_message(chat_id=CHAT_ID, text=msg)
-            await asyncio.sleep(1.5)  # delay per evitare flood
-        except Exception as ex:
-            print("[TELEGRAM ERROR INDICATORS]", ex)
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            print("[TELEGRAM ERROR NEWS]", e)
+
+    indicators = await fetch_indicators()
+    for item in indicators[:3]:  # prime 3 indicatori
+        title = await safe_translate(item.title)
+        pub_date = parse_rss_date(item.published_parsed).strftime("%Y-%m-%d %H:%M UTC")
+        msg = f"📊 {title}\n🕒 Orario uscita: {pub_date}"
+        try:
+            await bot.send_message(chat_id=CHAT_ID, text=msg)
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            print("[TELEGRAM ERROR INDICATORS]", e)
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
     try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente - test in corso")
     except Exception as e:
         print("[TELEGRAM ERROR STARTUP]", e)
 
     while True:
-        try:
-            await send_daily_news()
-            await send_indicators()
-        except Exception as e:
-            print("[LOOP ERROR]", e)
-        await asyncio.sleep(600)  # controllo ogni 10 minuti
+        await send_test_messages()
+        await send_rss_preview()
+        await asyncio.sleep(600)  # ogni 10 minuti
 
 # ==============================
 # MAIN
