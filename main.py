@@ -40,8 +40,10 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Fetch eventi via API ForexFactory
+# Fetch eventi filtrati High Impact
 # -----------------------------
+HIGH_IMPACT_KEYWORDS = ["ppi", "core ppi"]
+
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
     headers = {
@@ -50,32 +52,26 @@ def fetch_events():
         "Content-Type": "application/json"
     }
     payload = {}
-
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
-        print("DEBUG API RESPONSE:", json.dumps(data[:5], indent=2))  # primo 5 eventi per debug
+        # Debug dei primi 5 eventi
+        print("DEBUG API RESPONSE:", json.dumps(data[:5], indent=2))
     except Exception as e:
         print("Errore API:", e)
         return []
 
     events = []
-    ALWAYS_NOTIFY = ["PPI", "Core PPI", "CPI", "Non-Farm Payrolls"]
-
     for item in data:
         currency = item.get("currency")
-        if currency not in ["USD", "EUR"]:
-            continue
-
         headline = item.get("name")
-        if not headline:
-            continue
-
         impact_value = str(item.get("impact", "")).lower()
         ts = int(datetime.now(TIMEZONE).timestamp())
 
-        # Considera High impact o eventi sempre notificati
-        if not (impact_value == "high" or any(k.lower() in headline.lower() for k in ALWAYS_NOTIFY)):
+        # Filtra solo USD/EUR e High Impact
+        if currency not in ["USD", "EUR"]:
+            continue
+        if impact_value != "high" and not any(k in headline.lower() for k in HIGH_IMPACT_KEYWORDS):
             continue
 
         events.append({
@@ -92,35 +88,23 @@ def fetch_events():
     return events
 
 # -----------------------------
-# Messaggi daily / weekly
+# Messaggio giornaliero leggibile
 # -----------------------------
 async def send_daily():
     events = fetch_events()
     if not events:
-        await application.bot.send_message(chat_id=CHAT_ID, text="📅 Oggi non ci sono news importanti USD/EUR.")
+        await application.bot.send_message(chat_id=CHAT_ID, text="📅 Oggi non ci sono news High Impact USD/EUR.")
         return
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
+        date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%H:%M")
         actual = e["actual"] or "N/D"
         forecast = e["forecast"] or "N/D"
-        msg += f"{date_str} - {e['headline']} (Actual: {actual}, Forecast: {forecast})\n"
+        previous = e["previous"] or "N/D"
 
-    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-
-async def send_weekly():
-    events = fetch_events()
-    if not events:
-        await application.bot.send_message(chat_id=CHAT_ID, text="📆 Questa settimana non ci sono news importanti USD/EUR.")
-        return
-
-    msg = "📆 *High Impact USD & EUR - Settimana*\n\n"
-    for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
-        actual = e["actual"] or "N/D"
-        forecast = e["forecast"] or "N/D"
-        msg += f"{date_str} - {e['headline']} (Actual: {actual}, Forecast: {forecast})\n"
+        msg += f"*{e['headline']}* ({e['currency']})\n"
+        msg += f"🕒 {date_str} | Forecast: {forecast} | Previous: {previous} | Actual: {actual}\n\n"
 
     await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
