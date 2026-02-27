@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from flask import Flask
 from telegram import Bot
@@ -15,6 +15,9 @@ RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 PORT = int(os.getenv("PORT", 10000))
+
+if not RAPIDAPI_KEY or not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("RAPIDAPI_KEY, BOT_TOKEN o CHAT_ID non impostati correttamente")
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -42,11 +45,13 @@ def fetch_events():
         "x-rapidapi-key": RAPIDAPI_KEY,
         "Content-Type": "application/json"
     }
+
     try:
         response = requests.post(url, headers=headers, json={}, timeout=15)
         response.raise_for_status()
         data = response.json()
-    except:
+    except Exception as e:
+        print("[API ERROR]", e)
         return []
 
     description = data.get("description", [])
@@ -55,10 +60,12 @@ def fetch_events():
 
     events = []
     today = datetime.now(pytz.utc).date()
+    week_later = today + timedelta(days=7)
 
     for item in description:
         if not isinstance(item, dict):
             continue
+
         currency = item.get("currency")
         impact = item.get("impact")
         dateline = item.get("next_dateline")
@@ -67,9 +74,11 @@ def fetch_events():
 
         try:
             event_time = datetime.fromisoformat(dateline.replace("Z", "+00:00"))
-        except:
+        except Exception:
             continue
-        if event_time.date() != today:
+
+        # Prende tutti gli eventi della settimana
+        if not (today <= event_time.date() <= week_later):
             continue
 
         graph_data = graph_map.get(dateline, {})
@@ -82,8 +91,9 @@ def fetch_events():
             "currency": currency,
             "actual": actual,
             "forecast": forecast,
-            "time": event_time.strftime("%H:%M UTC")
+            "time": event_time.strftime("%Y-%m-%d %H:%M UTC")
         })
+
     return events
 
 # ==============================
@@ -91,10 +101,20 @@ def fetch_events():
 # ==============================
 async def send_events():
     events = fetch_events()
+    if not events:
+        print("[INFO] Nessuna news per la settimana prossima")
+        return
+
+    print(f"[DEBUG] Eventi totali trovati: {len(events)}")
+    for e in events:
+        print(e)
+
     for event in events:
         if event["id"] in sent_events:
             continue
+
         label, score = evaluate_impact(event["name"], event["actual"], event["forecast"])
+
         message = (
             f"📊 {event['currency']} HIGH IMPACT\n"
             f"{event['name']}\n"
@@ -103,19 +123,30 @@ async def send_events():
             f"Forecast: {event['forecast']}\n"
             f"Impact Score: {score} ({label})"
         )
+
         try:
             await bot.send_message(chat_id=CHAT_ID, text=message)
             sent_events.add(event["id"])
-        except:
-            pass
+            print(f"[SENT] {event['name']}")
+        except Exception as e:
+            print("[TELEGRAM ERROR]", e)
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
+    # Messaggio di test all’avvio
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente e pronto a inviare news!")
+    except Exception as e:
+        print("[TELEGRAM ERROR INIT]", e)
+
     while True:
-        await send_events()
-        await asyncio.sleep(300)
+        try:
+            await send_events()
+        except Exception as e:
+            print("[LOOP ERROR]", e)
+        await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
 # MAIN
@@ -123,8 +154,11 @@ async def scheduler():
 if __name__ == "__main__":
     from threading import Thread
 
+    # Avvia Flask in un thread separato
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
 
     Thread(target=run_flask).start()
+
+    # Avvia scheduler async nel main thread
     asyncio.run(scheduler())
