@@ -5,3 +5,4 @@ pytz
 flask
 feedparser
 deep-translator
+beautifulsoup4
