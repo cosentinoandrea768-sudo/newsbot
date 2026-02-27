@@ -24,6 +24,7 @@ if not CHAT_ID:
     raise ValueError("CHAT_ID non impostato")
 
 bot = Bot(token=BOT_TOKEN)
+print("[DEBUG] Startup Telegram OK")
 
 # ==============================
 # FLASK (Render richiede porta)
@@ -44,7 +45,6 @@ sent_events = set()
 # ==============================
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/get_list"
-
     headers = {
         "x-rapidapi-host": "forexfactory1.p.rapidapi.com",
         "x-rapidapi-key": RAPIDAPI_KEY,
@@ -68,9 +68,7 @@ def fetch_events():
     description = data.get("description", [])
     graph = data.get("graph", [])
 
-    # Mappa rapida per prendere actual/forecast dal graph
     graph_map = {g.get("dateline"): g for g in graph if isinstance(g, dict)}
-
     events = []
 
     for item in description:
@@ -81,14 +79,11 @@ def fetch_events():
         impact = item.get("impact")
         dateline = item.get("next_dateline")
 
-        # Filtro solo USD / EUR
+        # Filtro USD/EUR + High Impact
         if currency not in ["USD", "EUR"]:
             continue
-
-        # Solo High Impact
         if impact != "High":
             continue
-
         if not dateline:
             continue
 
@@ -101,13 +96,9 @@ def fetch_events():
         if event_time.date() != today:
             continue
 
-        # Prende actual / forecast dal graph se esiste
         graph_data = graph_map.get(dateline, {})
         actual = graph_data.get("actual_formatted") or graph_data.get("actual")
         forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
-
-        if actual is None or forecast is None:
-            print(f"[INFO] Dati mancanti per {item.get('name')} ({currency})")
 
         event = {
             "id": f"{item.get('name')}_{dateline}",
@@ -120,6 +111,7 @@ def fetch_events():
 
         events.append(event)
 
+    print(f"[DEBUG] Events fetched: {len(events)}")
     return events
 
 # ==============================
@@ -129,13 +121,10 @@ async def send_events():
     events = fetch_events()
 
     if not events:
-        print("[INFO] Nessuna news oggi")
+        print("[INFO] Nessuna news USD/EUR High Impact oggi")
         return
 
-    print(f"[INFO] Eventi trovati: {len(events)}")
-
     for event in events:
-
         if event["id"] in sent_events:
             continue
 
@@ -170,8 +159,7 @@ async def scheduler():
             await send_events()
         except Exception as e:
             print("[LOOP ERROR]", e)
-
-        await asyncio.sleep(300)  # controlla ogni 5 minuti
+        await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
 # MAIN
