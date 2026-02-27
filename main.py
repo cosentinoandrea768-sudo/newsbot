@@ -42,29 +42,20 @@ threading.Thread(
 # Fetch eventi via API
 # -----------------------------
 def fetch_events():
-    print("\n🔎 Chiamata API in corso...")
-    
     url = "https://trader-calendar.p.rapidapi.com/api/calendar"
+
     headers = {
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": "trader-calendar.p.rapidapi.com",
         "Content-Type": "application/json"
     }
 
-    payload = {"country": "USA"}  # puoi estendere se vuoi anche EUR
+    payload = {"country": "USA"}  # puoi duplicare per EUR se vuoi
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        print("Status code API:", response.status_code)
-
         data = response.json()
-
-        if not data:
-            print("⚠️ API ha restituito lista vuota")
-            return []
-
-    except Exception as e:
-        print("❌ Errore API:", e)
+    except Exception:
         return []
 
     events = []
@@ -75,7 +66,17 @@ def fetch_events():
         if currency not in ["USD", "EUR"]:
             continue
 
-        if item.get("impact") != "High":
+        impact_raw = item.get("impact")
+        impact_value = str(impact_raw).strip().lower()
+
+        # Consideriamo High impact in modo robusto
+        is_high = (
+            impact_value == "high"
+            or impact_value == "3"
+            or (impact_value.isdigit() and int(impact_value) >= 3)
+        )
+
+        if not is_high:
             continue
 
         ts = int(datetime.now(TIMEZONE).timestamp())
@@ -90,19 +91,15 @@ def fetch_events():
             "datetime": ts
         })
 
-    print(f"✅ Eventi filtrati trovati: {len(events)}")
     return events
 
 # -----------------------------
 # Messaggi daily / weekly
 # -----------------------------
 async def send_daily():
-    print("\n📅 Eseguo send_daily()")
-
     events = fetch_events()
 
     if not events:
-        print("ℹ️ Nessun evento High Impact oggi")
         await application.bot.send_message(
             chat_id=CHAT_ID,
             text="📅 Oggi non ci sono news High Impact USD/EUR."
@@ -112,7 +109,10 @@ async def send_daily():
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
 
     for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
+        date_str = datetime.fromtimestamp(
+            e["datetime"], TIMEZONE
+        ).strftime("%Y-%m-%d %H:%M")
+
         msg += f"{date_str} - {e['headline']}\n"
 
     await application.bot.send_message(
@@ -121,15 +121,10 @@ async def send_daily():
         parse_mode="Markdown"
     )
 
-    print("✅ Messaggio daily inviato")
-
 async def send_weekly():
-    print("\n📆 Eseguo send_weekly()")
-
     events = fetch_events()
 
     if not events:
-        print("ℹ️ Nessun evento High Impact questa settimana")
         await application.bot.send_message(
             chat_id=CHAT_ID,
             text="📆 Questa settimana non ci sono news High Impact USD/EUR."
@@ -139,7 +134,10 @@ async def send_weekly():
     msg = "📆 *High Impact USD & EUR - Settimana*\n\n"
 
     for e in events:
-        date_str = datetime.fromtimestamp(e["datetime"]).strftime("%Y-%m-%d %H:%M")
+        date_str = datetime.fromtimestamp(
+            e["datetime"], TIMEZONE
+        ).strftime("%Y-%m-%d %H:%M")
+
         msg += f"{date_str} - {e['headline']}\n"
 
     await application.bot.send_message(
@@ -148,19 +146,11 @@ async def send_weekly():
         parse_mode="Markdown"
     )
 
-    print("✅ Messaggio weekly inviato")
-
 # -----------------------------
-# Controllo release con impatto
+# Notifica release con impatto
 # -----------------------------
 async def check_releases():
-    print("\n⏳ Controllo nuove release...")
-
     events = fetch_events()
-
-    if not events:
-        print("ℹ️ Nessuna release trovata")
-        return
 
     for e in events:
         news_id = e["id"]
@@ -171,14 +161,17 @@ async def check_releases():
         actual = e.get("actual")
         forecast = e.get("forecast")
 
-        impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
+        impact_label, _ = evaluate_impact(
+            e["headline"], actual, forecast
+        )
+
         surprise = calculate_surprise(actual, forecast)
 
         msg = (
             f"📊 *{e['headline']}* ({e['currency']})\n\n"
             f"Actual: {actual or 'N/D'}\n"
             f"Forecast: {forecast or 'N/D'}\n"
-            f"Surprise: {round(surprise,2) if surprise else 0}%\n\n"
+            f"Surprise: {round(surprise, 2) if surprise else 0}%\n\n"
             f"Impact: {impact_label}"
         )
 
@@ -189,30 +182,27 @@ async def check_releases():
         )
 
         notified_events.add(news_id)
-        print(f"✅ Notifica inviata per {e['headline']}")
 
 # -----------------------------
-# Scheduler
+# Scheduler (Render usa UTC)
+# 06:00 UTC = 07:00 Italia (inverno)
 # -----------------------------
 async def scheduler_loop():
-    print("🚀 Bot avviato")
-    print("Ora server UTC:", datetime.utcnow())
-    print("Ora Roma:", datetime.now(TIMEZONE))
 
-    # Test immediato all'avvio
+    # Messaggio avvio
     await application.bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ Bot avviato correttamente su Render"
+        text="✅ Bot avviato correttamente"
     )
 
     await send_daily()
     await check_releases()
 
-    schedule.every().day.at("07:00").do(
+    schedule.every().day.at("06:00").do(
         lambda: asyncio.create_task(send_daily())
     )
 
-    schedule.every().monday.at("07:00").do(
+    schedule.every().monday.at("06:00").do(
         lambda: asyncio.create_task(send_weekly())
     )
 
