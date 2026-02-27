@@ -17,7 +17,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 PORT = int(os.getenv("PORT", 10000))
 
 if not RAPIDAPI_KEY or not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("RAPIDAPI_KEY, BOT_TOKEN o CHAT_ID non impostati correttamente")
+    raise ValueError("RAPIDAPI_KEY, BOT_TOKEN e CHAT_ID devono essere impostati")
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -36,62 +36,56 @@ def home():
 sent_events = set()
 
 # ==============================
-# FETCH EVENTS
+# FETCH EVENTS - Ultimate Economic Calendar
 # ==============================
 def fetch_events():
-    url = "https://forexfactory1.p.rapidapi.com/get_list"
+    url = "https://ultimate-economic-calendar.p.rapidapi.com/economic-events/tradingview"
+
     headers = {
-        "x-rapidapi-host": "forexfactory1.p.rapidapi.com",
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "Content-Type": "application/json"
+        "x-rapidapi-host": "ultimate-economic-calendar.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY
+    }
+
+    today = datetime.utcnow().date()
+    params = {
+        "from": today.strftime("%Y-%m-%d"),
+        "to": (today + timedelta(days=7)).strftime("%Y-%m-%d"),
+        "countries": "US,EU"
     }
 
     try:
-        response = requests.post(url, headers=headers, json={}, timeout=15)
+        response = requests.get(url, headers=headers, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
     except Exception as e:
         print("[API ERROR]", e)
         return []
 
-    description = data.get("description", [])
-    graph = data.get("graph", [])
-    graph_map = {g.get("dateline"): g for g in graph if isinstance(g, dict)}
-
     events = []
-    today = datetime.now(pytz.utc).date()
-    week_later = today + timedelta(days=7)
-
-    for item in description:
-        if not isinstance(item, dict):
+    for item in data.get("events", []):
+        # Filtro High Impact USD/EUR
+        if item.get("impact") != "High":
+            continue
+        currency = item.get("currency")
+        if currency not in ["USD", "EUR"]:
             continue
 
-        currency = item.get("currency")
-        impact = item.get("impact")
-        dateline = item.get("next_dateline")
-        if currency not in ["USD", "EUR"] or impact != "High" or not dateline:
+        date_utc = item.get("dateUtc")
+        if not date_utc:
             continue
 
         try:
-            event_time = datetime.fromisoformat(dateline.replace("Z", "+00:00"))
+            event_time = datetime.fromisoformat(date_utc.replace("Z", "+00:00"))
         except Exception:
             continue
 
-        # Prende tutti gli eventi della settimana
-        if not (today <= event_time.date() <= week_later):
-            continue
-
-        graph_data = graph_map.get(dateline, {})
-        actual = graph_data.get("actual_formatted") or graph_data.get("actual")
-        forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
-
         events.append({
-            "id": f"{item.get('name')}_{dateline}",
+            "id": f"{item.get('name')}_{date_utc}",
             "name": item.get("name"),
             "currency": currency,
-            "actual": actual,
-            "forecast": forecast,
-            "time": event_time.strftime("%Y-%m-%d %H:%M UTC")
+            "actual": item.get("actual"),
+            "forecast": item.get("forecast"),
+            "time": event_time.strftime("%H:%M UTC")
         })
 
     return events
@@ -101,20 +95,16 @@ def fetch_events():
 # ==============================
 async def send_events():
     events = fetch_events()
-    if not events:
-        print("[INFO] Nessuna news per la settimana prossima")
-        return
 
-    print(f"[DEBUG] Eventi totali trovati: {len(events)}")
-    for e in events:
-        print(e)
+    if not events:
+        print("[INFO] Nessuna news High Impact USD/EUR trovata")
+        return
 
     for event in events:
         if event["id"] in sent_events:
             continue
 
         label, score = evaluate_impact(event["name"], event["actual"], event["forecast"])
-
         message = (
             f"📊 {event['currency']} HIGH IMPACT\n"
             f"{event['name']}\n"
@@ -132,21 +122,25 @@ async def send_events():
             print("[TELEGRAM ERROR]", e)
 
 # ==============================
+# MESSAGGIO DI TEST ALL'AVVIO
+# ==============================
+async def startup_message():
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente!")
+    except Exception as e:
+        print("[TELEGRAM STARTUP ERROR]", e)
+
+# ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
-    # Messaggio di test all’avvio
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente e pronto a inviare news!")
-    except Exception as e:
-        print("[TELEGRAM ERROR INIT]", e)
-
+    await startup_message()
     while True:
         try:
             await send_events()
         except Exception as e:
             print("[LOOP ERROR]", e)
-        await asyncio.sleep(300)  # ogni 5 minuti
+        await asyncio.sleep(300)  # controlla ogni 5 minuti
 
 # ==============================
 # MAIN
@@ -161,4 +155,8 @@ if __name__ == "__main__":
     Thread(target=run_flask).start()
 
     # Avvia scheduler async nel main thread
-    asyncio.run(scheduler())
+    try:
+        asyncio.run(scheduler())
+    except Exception as e:
+        print("[FATAL ERROR]", e)
+        
