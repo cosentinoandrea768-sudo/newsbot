@@ -1,13 +1,11 @@
 import os
 import asyncio
-from datetime import datetime
 from threading import Thread
-
+from datetime import datetime
 import pytz
-import requests
-from bs4 import BeautifulSoup
+import feedparser
 from telegram import Bot
-
+from flask import Flask
 from impact_logic import evaluate_impact
 
 # ==============================
@@ -23,14 +21,8 @@ if not BOT_TOKEN or not CHAT_ID:
 bot = Bot(token=BOT_TOKEN)
 
 # ==============================
-# GLOBAL STATE
-# ==============================
-sent_events = {}
-
-# ==============================
 # FLASK
 # ==============================
-from flask import Flask
 app = Flask(__name__)
 
 @app.route("/")
@@ -38,53 +30,35 @@ def home():
     return "Bot attivo ✅"
 
 # ==============================
-# SCRAPING INVESTING
+# GLOBAL STATE
 # ==============================
-INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
+sent_events = {}
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-}
+# ==============================
+# FETCH RSS ECONOMIC INDICATORS
+# ==============================
+RSS_ECONOMIC_INDICATORS = "https://www.investing.com/economic-calendar/Service/Rss.ashx?timeZone=11"
 
-def fetch_investing_indicators():
-    """
-    Ritorna una lista di eventi high impact USD/EUR
-    con struttura:
-    {
-        "id": event_id,
-        "name": name,
-        "currency": currency,
-        "time": time,
-        "previous": previous,
-        "forecast": forecast,
-        "actual": actual
-    }
-    """
-    response = requests.get(INVESTING_CALENDAR_URL, headers=HEADERS)
-    soup = BeautifulSoup(response.text, "html.parser")
-
+def fetch_economic_indicators():
+    feed = feedparser.parse(RSS_ECONOMIC_INDICATORS)
     events = []
+    for entry in feed.entries:
+        # Solo High Impact USD/EUR
+        impact = getattr(entry, "impact", "").lower()
+        currency = getattr(entry, "currency", "")
+        if impact != "high" or currency not in ["USD", "EUR"]:
+            continue
 
-    # Trova le righe del calendario (qui bisogna adattare il parser secondo il sito)
-    rows = soup.select("tr.js-event-item")
-    for row in rows:
-        impact = row.get("data-impact")
-        currency = row.get("data-currency")
-        if impact != "3" or currency not in ["USD", "EUR"]:
-            continue  # solo High Impact USD/EUR
-
-        event_id = row.get("data-event-id")
-        name = row.get("data-event")
-        time = row.get("data-time")
-        previous = row.get("data-previous", "-")
-        forecast = row.get("data-forecast", "-")
-        actual = row.get("data-actual", "-")
+        previous = getattr(entry, "previous", "-")
+        forecast = getattr(entry, "forecast", "-")
+        actual = getattr(entry, "actual", "-")
+        event_time = getattr(entry, "time", "??:??")
 
         events.append({
-            "id": event_id,
-            "name": name,
+            "id": entry.id,
+            "name": entry.title,
             "currency": currency,
-            "time": time,
+            "time": event_time,
             "previous": previous,
             "forecast": forecast,
             "actual": actual
@@ -92,16 +66,14 @@ def fetch_investing_indicators():
     return events
 
 # ==============================
-# INVIO TELEGRAM
+# SEND TELEGRAM
 # ==============================
 async def send_economic_indicators():
-    events = fetch_investing_indicators()
-
+    events = fetch_economic_indicators()
     for event in events:
         event_id = event["id"]
         prev_state = sent_events.get(event_id, {})
 
-        # Se non inviato prima o se i dati actual sono cambiati
         if not prev_state or prev_state.get("actual") != event["actual"]:
             actual = event["actual"] if event["actual"] else "-"
             forecast = event["forecast"] if event["forecast"] else "-"
@@ -138,8 +110,7 @@ async def scheduler():
             await send_economic_indicators()
         except Exception as e:
             print("[LOOP ERROR]", e)
-
-        await asyncio.sleep(300)  # controlla ogni 5 minuti
+        await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
 # MAIN
