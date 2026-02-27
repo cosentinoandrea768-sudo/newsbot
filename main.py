@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pytz
 from flask import Flask
 from telegram import Bot
-from impact_logic import evaluate_impact  # usa la tua versione esistente
+from impact_logic import evaluate_impact
 
 # ==============================
 # ENV VARS
@@ -14,7 +14,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("BOT_TOKEN o CHAT_ID non impostati!")
+    raise ValueError("BOT_TOKEN o CHAT_ID non impostati")
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -33,28 +33,46 @@ def home():
 sent_events = set()
 
 # ==============================
-# MOCK NEWS
+# MOCK NEWS (per test e sviluppo)
 # ==============================
 def get_mock_events():
-    today = datetime.now(pytz.utc).date()
+    today = datetime.now(pytz.utc)
     events = []
-    for i in range(1, 8):  # prossimi 7 giorni
-        day = today + timedelta(days=i)
+    for i in range(1, 8):  # 7 giorni
+        event_time = today + timedelta(days=i)
+        dateline = event_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         events.append({
-            "id": f"Mock Event {i}_{day.isoformat()}",
+            "id": f"Mock_Event_{i}_{dateline}",
             "name": f"Mock Event {i}",
             "currency": "USD" if i % 2 == 0 else "EUR",
-            "actual": round(100 + i * 1.5, 2),
-            "forecast": round(100 + i * 1.2, 2),
-            "time": day.strftime("%Y-%m-%d 12:30 UTC")
+            "actual": round(100 + i * 0.5, 2),
+            "forecast": round(100 + i * 0.2, 2),
+            "time": event_time.strftime("%H:%M UTC")
         })
     return events
+
+# ==============================
+# FUNZIONE FETCH EVENTS
+# ==============================
+async def fetch_events():
+    """
+    Qui puoi sostituire con la chiamata reale all'API.
+    Per ora restituisce mock events.
+    """
+    # Esempio di utilizzo API reale:
+    # events = call_real_api()
+    # return events
+    return get_mock_events()
 
 # ==============================
 # INVIO TELEGRAM
 # ==============================
 async def send_events():
-    events = get_mock_events()
+    events = await fetch_events()
+
+    if not events:
+        print("[INFO] Nessuna news oggi")
+        return
 
     for event in events:
         if event["id"] in sent_events:
@@ -78,25 +96,22 @@ async def send_events():
             print("[TELEGRAM ERROR]", e)
 
 # ==============================
-# MESSAGGIO DI AVVIO
-# ==============================
-async def send_startup_message():
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente (mock mode)")
-        print("[DEBUG] Messaggio di startup inviato")
-    except Exception as e:
-        print("[TELEGRAM ERROR STARTUP]", e)
-
-# ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
-    await send_startup_message()
+    # Messaggio di startup
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
+        print("[DEBUG] Messaggio di startup inviato")
+    except Exception as e:
+        print("[TELEGRAM ERROR] Startup:", e)
+
     while True:
         try:
             await send_events()
         except Exception as e:
             print("[LOOP ERROR]", e)
+
         await asyncio.sleep(300)  # controlla ogni 5 minuti
 
 # ==============================
@@ -105,14 +120,11 @@ async def scheduler():
 if __name__ == "__main__":
     from threading import Thread
 
-    # Avvia Flask in un thread separato
+    # Avvia Flask in background
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
 
     Thread(target=run_flask).start()
 
-    # Avvia scheduler async nel main thread
-    try:
-        asyncio.run(scheduler())
-    except Exception as e:
-        print("[FATAL ERROR]", e)
+    # Avvia scheduler
+    asyncio.run(scheduler())
