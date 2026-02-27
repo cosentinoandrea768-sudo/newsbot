@@ -1,31 +1,28 @@
 import os
-import json
 import asyncio
+import json
+from datetime import datetime, timezone
 import http.client
-from datetime import datetime
+import pytz
 from telegram import Bot
+from flask import Flask
 
-# ===============================
+# -----------------------------
 # Variabili d'ambiente
-# ===============================
+# -----------------------------
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 
+if not all([TELEGRAM_TOKEN, CHAT_ID, RAPIDAPI_KEY]):
+    raise ValueError("Assicurati che BOT_TOKEN, CHAT_ID e RAPIDAPI_KEY siano impostati!")
+
 bot = Bot(token=TELEGRAM_TOKEN)
+tz = pytz.timezone("Europe/Rome")  # Orario italiano
 
-# ===============================
-# Funzione per inviare messaggi Telegram
-# ===============================
-async def send_telegram_message(message: str):
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
-    except Exception as e:
-        print(f"[ERROR] Telegram send: {e}")
-
-# ===============================
-# Fetch eventi da RapidAPI
-# ===============================
+# -----------------------------
+# Funzioni di fetch e formatting
+# -----------------------------
 def fetch_events():
     conn = http.client.HTTPSConnection("forexfactory1.p.rapidapi.com")
     payload = "{}"
@@ -34,74 +31,97 @@ def fetch_events():
         "x-rapidapi-host": "forexfactory1.p.rapidapi.com",
         "Content-Type": "application/json"
     }
+
     conn.request("POST", "/api?function=get_list", payload, headers)
     res = conn.getresponse()
-    data = res.read()
+    data_raw = res.read()
     try:
-        data_json = json.loads(data)
+        data = json.loads(data_raw)
     except json.JSONDecodeError:
-        print("[ERROR] JSON decode failed")
+        print("Errore parsing JSON")
         return []
 
-    events_today = []
-    for item in data_json:
+    # Filtra solo eventi oggi ad alto impatto USD/EUR
+    today = datetime.now(tz).date()
+    events = []
+    for item in data:
+        # Assumendo item abbia 'currency', 'impact', 'name', 'date'
+        if not isinstance(item, dict):
+            continue
+        currency = item.get("currency")
+        impact = item.get("impact")
+        date_str = item.get("date")
+        if not date_str:
+            continue
         try:
-            event_date = datetime.strptime(item.get("date"), "%Y-%m-%dT%H:%M:%S")
-        except Exception:
-            continue  # salta se data non valida
+            event_date = datetime.fromisoformat(date_str).astimezone(tz)
+        except:
+            continue
 
-        # filtro solo high-impact USD/EUR
-        if item.get("impact") == "high" and item.get("currency") in ["USD", "EUR"]:
-            if event_date.date() == datetime.now().date():
-                events_today.append({
-                    "name": item.get("name"),
-                    "currency": item.get("currency"),
-                    "date": event_date,
-                    "actual": item.get("actual"),
-                    "forecast": item.get("forecast"),
-                    "previous": item.get("previous")
-                })
-    print(f"[DEBUG] Eventi filtrati oggi: {len(events_today)}")
-    return events_today
+        if event_date.date() == today and currency in ["USD", "EUR"] and impact == "High":
+            events.append(item)
+    return events
 
-# ===============================
-# Formatta messaggio Telegram
-# ===============================
-def format_event_message(events):
-    messages = []
-    for e in events:
-        msg = (
-            f"📅 <b>{e['date'].strftime('%d/%m/%Y %H:%M')}</b>\n"
-            f"💹 <b>{e['currency']}</b> - {e['name']}\n"
-            f"📊 Forecast: {e['forecast'] or '-'} | "
-            f"Previous: {e['previous'] or '-'} | "
-            f"Actual: {e['actual'] or '-'}"
-        )
-        messages.append(msg)
-    return "\n\n".join(messages)
+def format_event_message(event):
+    name = event.get("name", "Unknown")
+    currency = event.get("currency", "")
+    date_str = event.get("date")
+    if date_str:
+        try:
+            event_time = datetime.fromisoformat(date_str).astimezone(tz).strftime("%H:%M")
+        except:
+            event_time = "??:??"
+    else:
+        event_time = "??:??"
 
-# ===============================
-# Scheduler principale
-# ===============================
+    actual = event.get("actual", "–")
+    forecast = event.get("forecast", "–")
+    previous = event.get("previous", "–")
+
+    msg = f"📰 {currency} | {name}\n"
+    msg += f"🕒 Ora: {event_time}\n"
+    msg += f"📊 Forecast: {forecast} | Previous: {previous} | Actual: {actual}\n"
+    return msg
+
+# -----------------------------
+# Funzione principale scheduler
+# -----------------------------
 async def send_daily():
     events = fetch_events()
     if not events:
-        await send_telegram_message("📌 Nessuna news high-impact USD/EUR oggi.")
+        print("Nessuna news oggi ad alto impatto USD/EUR")
         return
 
-    message = format_event_message(events)
-    await send_telegram_message(message)
+    for event in events:
+        msg = format_event_message(event)
+        try:
+            bot.send_message(chat_id=CHAT_ID, text=msg)
+            print(f"Inviato messaggio: {event.get('name')}")
+        except Exception as e:
+            print(f"Errore invio Telegram: {e}")
 
 async def scheduler_loop():
-    # Messaggio di avvio
-    await send_telegram_message("🚀 Bot avviato correttamente")
+    print("🚀 Scheduler avviato, controllo eventi ogni 5 minuti...")
     while True:
         await send_daily()
-        await asyncio.sleep(300)  # ogni 5 minuti
+        await asyncio.sleep(300)  # 5 minuti
 
-# ===============================
-# Main
-# ===============================
+# -----------------------------
+# Flask Web per Render
+# -----------------------------
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "Bot attivo e scheduler in esecuzione!"
+
+# -----------------------------
+# Avvio main
+# -----------------------------
 if __name__ == "__main__":
-    print("🚀 Bot avviato, loop scheduler in partenza...")
-    asyncio.run(scheduler_loop())
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 Bot avviato correttamente! In ascolto sulla porta {port}")
+    # Avvia loop asyncio scheduler
+    asyncio.create_task(scheduler_loop())
+    # Avvia Flask per endpoint
+    app.run(host="0.0.0.0", port=port)
