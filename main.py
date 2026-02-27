@@ -1,6 +1,5 @@
 import os
 import asyncio
-from datetime import datetime
 from flask import Flask
 from telegram import Bot
 import feedparser
@@ -35,7 +34,7 @@ sent_news = set()
 # ==============================
 # FEED RSS
 # ==============================
-ECONOMY_RSS = "https://www.investing.com/rss/news_25.rss"  # Economy News
+ECONOMY_RSS = "https://www.investing.com/rss/news_14.rss"
 
 # ==============================
 # FETCH NEWS
@@ -45,10 +44,11 @@ def fetch_economy_news():
     news_items = []
 
     for entry in feed.entries:
-        news_id = getattr(entry, "id", entry.link)  # usa link se id non esiste
+        news_id = getattr(entry, "id", entry.link)
         if news_id in sent_news:
             continue
 
+        # Traduzione in italiano
         title_it = GoogleTranslator(source='auto', target='it').translate(entry.title)
         published = getattr(entry, "published", "N/A")
         link = entry.link
@@ -73,7 +73,7 @@ async def send_economy_news():
 
     for item in news_items:
         message = (
-            f"📰 Economia News\n"
+            f"📰 BitPath News by Investing.com\n"  # Modifica qui il titolo
             f"{item['title']}\n"
             f"🕒 {item['published']}\n"
             f"🔗 {item['link']}"
@@ -89,7 +89,6 @@ async def send_economy_news():
 # SCHEDULER
 # ==============================
 async def scheduler():
-    # Messaggio di startup
     try:
         await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot Economy News avviato correttamente")
         print("[DEBUG] Messaggio di startup inviato")
@@ -102,7 +101,7 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)  # ogni 5 minuti
+        await asyncio.sleep(300)
 
 # ==============================
 # MAIN
@@ -110,11 +109,8 @@ async def scheduler():
 if __name__ == "__main__":
     from threading import Thread
 
-    # Avvia Flask in background
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
 
     Thread(target=run_flask).start()
-
-    # Avvia scheduler
     asyncio.run(scheduler())
