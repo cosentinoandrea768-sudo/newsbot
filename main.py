@@ -30,7 +30,7 @@ def home():
 # ==============================
 # GLOBAL STATE
 # ==============================
-sent_news = set()
+sent_news = set()  # In prod, inizialmente vuoto
 
 # ==============================
 # FEED RSS
@@ -47,7 +47,7 @@ def fetch_economy_news():
     for entry in feed.entries:
         news_id = getattr(entry, "id", entry.link)
         if news_id in sent_news:
-            continue
+            continue  # salta le news già inviate
 
         # Traduzione titolo
         title_it = GoogleTranslator(source='auto', target='it').translate(entry.title)
@@ -103,6 +103,12 @@ async def scheduler():
         print("[DEBUG] Messaggio di startup inviato")
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
+
+    # Al primo ciclo, registriamo le news già presenti nel feed senza inviarle
+    feed = feedparser.parse(ECONOMY_RSS)
+    for entry in feed.entries:
+        news_id = getattr(entry, "id", entry.link)
+        sent_news.add(news_id)
 
     while True:
         try:
