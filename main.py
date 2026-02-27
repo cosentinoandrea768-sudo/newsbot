@@ -1,25 +1,25 @@
 import os
 import asyncio
-import schedule
 import requests
+import json
 from datetime import datetime
 import pytz
 from flask import Flask
 from telegram.ext import ApplicationBuilder
-import json
+import schedule
 
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI ForexFactory
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI ForexFactory
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
 
 # -----------------------------
-# Bot Telegram asincrono
+# Bot Telegram
 # -----------------------------
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -39,53 +39,52 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Keywords per filtraggio eventi
+# Fetch eventi filtrati High Impact
 # -----------------------------
 HIGH_IMPACT_KEYWORDS = ["ppi", "core ppi"]
 
-# -----------------------------
-# Fetch eventi filtrati High Impact USD/EUR
-# -----------------------------
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
     headers = {
-        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
         "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com",
         "Content-Type": "application/json"
     }
-    payload = {}
+    payload = "{}"  # payload vuoto come da esempio RapidAPI
+
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response = requests.post(url, headers=headers, data=payload, timeout=10)
         data = response.json()
-        # DEBUG primi 5 eventi
+        # DEBUG dei primi 5 eventi
         print("DEBUG API RESPONSE:", json.dumps(data[:5], indent=2))
     except Exception as e:
         print("Errore API:", e)
         return []
 
     events = []
-    ts_now = int(datetime.now(TIMEZONE).timestamp())
     for item in data:
         currency = item.get("currency")
-        headline = item.get("name")
+        headline = item.get("name") or item.get("title") or ""
         impact_value = str(item.get("impact", "")).lower()
+        ts = item.get("timestamp") or int(datetime.now(TIMEZONE).timestamp())
 
-        # Filtra solo USD/EUR e High Impact o parole chiave PPI/Core PPI
+        # Filtra solo USD/EUR e High Impact
         if currency not in ["USD", "EUR"]:
             continue
         if impact_value != "high" and not any(k in headline.lower() for k in HIGH_IMPACT_KEYWORDS):
             continue
 
         events.append({
-            "id": item.get("id", f"{headline}_{ts_now}"),
+            "id": item.get("id", f"{headline}_{ts}"),
             "currency": currency,
             "headline": headline,
             "actual": item.get("actual"),
             "forecast": item.get("forecast"),
             "previous": item.get("previous"),
             "impact": impact_value,
-            "datetime": ts_now
+            "datetime": ts
         })
+
     return events
 
 # -----------------------------
@@ -94,10 +93,7 @@ def fetch_events():
 async def send_daily():
     events = fetch_events()
     if not events:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text="📅 Oggi non ci sono news High Impact USD/EUR."
-        )
+        await application.bot.send_message(chat_id=CHAT_ID, text="📅 Oggi non ci sono news High Impact USD/EUR.")
         return
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
@@ -129,23 +125,28 @@ async def check_releases():
         if actual is None:
             continue
 
+        # Qui puoi collegare la logica professionale di calcolo impatto e surprise
+        impact_label = "🟢 Alto" if actual else "🟡 Medio"
+        surprise = round((float(actual) - float(forecast)) / float(forecast) * 100, 2) if forecast else 0
+
         msg = (
             f"📊 *{e['headline']}* ({e['currency']})\n\n"
             f"Actual: {actual}\n"
             f"Forecast: {forecast or 'N/D'}\n"
-            f"Previous: {e.get('previous') or 'N/D'}\n"
-            f"Impact: {e['impact'].capitalize()}"
+            f"Surprise: {surprise}%\n\n"
+            f"Impact: {impact_label}"
         )
 
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
         notified_events.add(news_id)
 
 # -----------------------------
-# Scheduler asincrono
+# Scheduler
 # -----------------------------
 async def scheduler_loop():
     print("🚀 Bot avviato correttamente")
     await application.bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente")
+
     await send_daily()
     await check_releases()
 
