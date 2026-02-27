@@ -1,120 +1,96 @@
 import os
-import json
 import asyncio
-from datetime import datetime, timezone, timedelta
-import requests
+import http.client
+import json
+from datetime import datetime
 from telegram import Bot
 
-# ===== CONFIG =====
-API_KEY = os.getenv("RAPIDAPI_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# -----------------------------
+# Variabili ambiente
+# -----------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-# Timezone italiana
-TIMEZONE = timezone(timedelta(hours=1))
+if not BOT_TOKEN or not CHAT_ID or not RAPIDAPI_KEY:
+    raise ValueError("⚠️ BOT_TOKEN, CHAT_ID o RAPIDAPI_KEY non impostati")
 
-# ===== BOT INIT =====
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=BOT_TOKEN)
+print("🚀 Bot avviato correttamente")
 
-# ===== FETCH NEWS =====
+# -----------------------------
+# Costanti e filtri
+# -----------------------------
+API_HOST = "forexfactory1.p.rapidapi.com"
+HIGH_IMPACT_CURRENCIES = ["USD", "EUR"]
+
+# -----------------------------
+# Fetch eventi
+# -----------------------------
 def fetch_events():
-    url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
+    conn = http.client.HTTPSConnection(API_HOST)
+    payload = "{}"
     headers = {
-        "X-RapidAPI-Key": API_KEY,
-        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": API_HOST,
         "Content-Type": "application/json"
     }
-    payload = {}
 
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
-        data = response.json()  # lista di stringhe JSON
-    except Exception as e:
-        print("Errore API:", e)
-        return []
+    conn.request("POST", "/api?function=get_list", payload, headers)
+    res = conn.getresponse()
+    raw_data = res.read()
+    data = json.loads(raw_data)
 
     events = []
-    ids_seen = set()
-
-    for raw_item in data:
-        try:
-            item = json.loads(raw_item)  # decodifica JSON
-        except:
-            continue
-
-        # Filtra solo high impact USD/EUR
-        currency = item.get("currency")
-        impact = str(item.get("impact", "")).lower()
-        if currency not in ["USD", "EUR"]:
-            continue
-        if impact != "high":
-            continue
-
-        # Timestamp
-        date_str = item.get("date")
-        if date_str:
-            try:
-                ts = int(datetime.strptime(date_str, "%Y-%m-%d %H:%M").replace(tzinfo=TIMEZONE).timestamp())
-            except:
-                ts = int(datetime.now(TIMEZONE).timestamp())
-        else:
-            ts = int(datetime.now(TIMEZONE).timestamp())
-
-        news_id = f"{item.get('name')}_{currency}_{ts}"
-        if news_id in ids_seen:
-            continue
-        ids_seen.add(news_id)
-
-        events.append({
-            "id": news_id,
-            "currency": currency,
-            "headline": item.get("name"),
-            "actual": item.get("actual"),
-            "forecast": item.get("forecast"),
-            "previous": item.get("previous"),
-            "datetime": ts
-        })
-
-    print(f"DEBUG: trovate {len(events)} news high impact USD/EUR oggi")
+    seen = set()
+    for item in data:
+        if isinstance(item, dict):
+            currency = item.get("currency")
+            impact = item.get("impact")
+            name = item.get("name")
+            date = item.get("date")
+            key = (name, date, currency)
+            if key not in seen and currency in HIGH_IMPACT_CURRENCIES and impact == "High":
+                seen.add(key)
+                events.append(item)
     return events
 
-# ===== FORMAT MESSAGGIO TELEGRAM =====
-def format_event_message(event):
-    dt = datetime.fromtimestamp(event["datetime"], tz=TIMEZONE).strftime("%Y-%m-%d %H:%M")
-    actual = event["actual"] if event["actual"] is not None else "-"
-    forecast = event["forecast"] if event["forecast"] is not None else "-"
-    previous = event["previous"] if event["previous"] is not None else "-"
+# -----------------------------
+# Formattazione messaggio
+# -----------------------------
+def format_message(events):
+    if not events:
+        return "📌 Nessuna news high impact oggi."
 
-    msg = (
-        f"📰 {event['headline']} ({event['currency']})\n"
-        f"📅 Orario: {dt}\n"
-        f"💡 Forecast: {forecast}\n"
-        f"📊 Previous: {previous}\n"
-        f"🔔 Actual: {actual}\n"
-    )
+    msg = f"📅 News high impact ({datetime.now().strftime('%d/%m/%Y')}):\n\n"
+    for ev in events:
+        date_str = ev.get("date", "??:??")
+        name = ev.get("name", "Unknown")
+        currency = ev.get("currency", "")
+        forecast = ev.get("forecast", "N/A")
+        previous = ev.get("previous", "N/A")
+        msg += f"🕒 {date_str} | {currency} | {name}\n"
+        msg += f"   Forecast: {forecast} | Previous: {previous}\n\n"
     return msg
 
-# ===== INVIO NEWS =====
+# -----------------------------
+# Invia messaggio
+# -----------------------------
 async def send_daily():
     events = fetch_events()
-    if not events:
-        print("Nessuna news high impact oggi.")
-        return
+    msg = format_message(events)
+    await bot.send_message(chat_id=CHAT_ID, text=msg)
 
-    for event in events:
-        msg = format_event_message(event)
-        try:
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-        except Exception as e:
-            print("Errore invio Telegram:", e)
-
-# ===== SCHEDULER =====
+# -----------------------------
+# Scheduler loop
+# -----------------------------
 async def scheduler_loop():
-    print("🚀 Bot avviato correttamente")
     while True:
         await send_daily()
-        await asyncio.sleep(300)  # ogni 5 minuti
+        await asyncio.sleep(60*60*24)  # ogni 24h, modificabile per test
 
-# ===== MAIN =====
+# -----------------------------
+# Main
+# -----------------------------
 if __name__ == "__main__":
     asyncio.run(scheduler_loop())
