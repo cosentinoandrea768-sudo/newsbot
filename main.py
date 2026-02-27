@@ -11,7 +11,6 @@ from impact_logic import evaluate_impact
 # ==============================
 # ENV VARS
 # ==============================
-
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -25,11 +24,11 @@ if not CHAT_ID:
     raise ValueError("CHAT_ID non impostato")
 
 bot = Bot(token=BOT_TOKEN)
+print("[DEBUG] Startup Telegram OK")
 
 # ==============================
 # FLASK (Render richiede porta)
 # ==============================
-
 app = Flask(__name__)
 
 @app.route("/")
@@ -39,13 +38,11 @@ def home():
 # ==============================
 # GLOBAL STATE (anti-duplicati)
 # ==============================
-
 sent_events = set()
 
 # ==============================
-# FETCH EVENTS DA RAPIDAPI
+# FETCH EVENTS DA RAPIDAPI (USD/EUR & High Impact)
 # ==============================
-
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/get_list"
 
@@ -56,9 +53,7 @@ def fetch_events():
     }
 
     try:
-        response = requests.post(url, headers=headers, json={}, timeout=20)
-        print("[DEBUG] Status code:", response.status_code)
-        print("[DEBUG] Raw response:", response.text[:500])
+        response = requests.post(url, headers=headers, json={}, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
         print("[API ERROR]", e)
@@ -68,14 +63,11 @@ def fetch_events():
         data = response.json()
     except json.JSONDecodeError:
         print("[JSON ERROR] Risposta non valida")
+        print(response.text)
         return []
 
     description = data.get("description", [])
     graph = data.get("graph", [])
-
-    print(f"[DEBUG] Description count: {len(description)}")
-    print(f"[DEBUG] Graph count: {len(graph)}")
-
     graph_map = {g.get("dateline"): g for g in graph if isinstance(g, dict)}
 
     events = []
@@ -87,17 +79,16 @@ def fetch_events():
         currency = item.get("currency")
         impact = item.get("impact")
         dateline = item.get("next_dateline")
+        name = item.get("name")
 
-        print(f"[DEBUG] Checking: {item.get('name')} | {currency} | {impact}")
+        # LOG DEBUG
+        print(f"[DEBUG] News raw: {name} | {currency} | {impact} | {dateline}")
 
-        # Solo USD / EUR
+        # Filtro: solo USD/EUR e High impact
         if currency not in ["USD", "EUR"]:
             continue
-
-        # Solo High Impact (robusto)
-        if not impact or "High" not in str(impact):
+        if impact != "High":
             continue
-
         if not dateline:
             continue
 
@@ -111,13 +102,12 @@ def fetch_events():
             continue
 
         graph_data = graph_map.get(dateline, {})
-
         actual = graph_data.get("actual_formatted") or graph_data.get("actual")
         forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
 
         event = {
-            "id": f"{item.get('name')}_{dateline}",
-            "name": item.get("name"),
+            "id": f"{name}_{dateline}",
+            "name": name,
             "currency": currency,
             "actual": actual,
             "forecast": forecast,
@@ -126,34 +116,30 @@ def fetch_events():
 
         events.append(event)
 
-    print(f"[DEBUG] Filtered events today: {len(events)}")
+    print(f"[DEBUG] Eventi filtrati: {len(events)}")
     return events
 
 # ==============================
 # INVIO TELEGRAM
 # ==============================
-
 async def send_events():
     events = fetch_events()
 
     if not events:
-        print("[INFO] Nessuna news filtrata oggi")
+        print("[INFO] Nessuna news oggi")
         return
 
-    for event in events:
+    print(f"[INFO] Eventi trovati: {len(events)}")
 
+    for event in events:
         if event["id"] in sent_events:
             continue
 
-        try:
-            label, score = evaluate_impact(
-                event["name"],
-                event["actual"],
-                event["forecast"]
-            )
-        except Exception as e:
-            print("[IMPACT ERROR]", e)
-            label, score = "N/A", 0
+        label, score = evaluate_impact(
+            event["name"],
+            event["actual"],
+            event["forecast"]
+        )
 
         message = (
             f"📊 {event['currency']} HIGH IMPACT\n"
@@ -172,40 +158,31 @@ async def send_events():
             print("[TELEGRAM ERROR]", e)
 
 # ==============================
-# SCHEDULER
+# SCHEDULER ROBUSTO
 # ==============================
-
 async def scheduler():
     while True:
         try:
             await send_events()
         except Exception as e:
             print("[LOOP ERROR]", e)
-
-        await asyncio.sleep(300)  # 5 minuti
+        await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
-# MAIN (Render-safe)
+# MAIN
 # ==============================
-
 if __name__ == "__main__":
+    from threading import Thread
 
-    async def main():
-        # Test Telegram
-        try:
-            await bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente su Render")
-            print("[DEBUG] Startup Telegram OK")
-        except Exception as e:
-            print("[STARTUP TELEGRAM ERROR]", e)
+    # Flask in thread separato
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
 
-        # Avvia scheduler
-        asyncio.create_task(scheduler())
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
 
-        # Avvia Flask in executor (non blocca asyncio)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: app.run(host="0.0.0.0", port=PORT)
-        )
-
-    asyncio.run(main())
+    # Scheduler async nel main thread
+    try:
+        asyncio.run(scheduler())
+    except Exception as e:
+        print("[FATAL ERROR]", e)
