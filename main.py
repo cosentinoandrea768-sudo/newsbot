@@ -7,13 +7,14 @@ import pytz
 from flask import Flask
 from impact_logic import evaluate_impact, calculate_surprise
 from telegram.ext import ApplicationBuilder
+import json
 
 # -----------------------------
 # Variabili ambiente
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = os.getenv("RAPIDAPI_KEY")  # La tua key ForexFactory
+API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key per ForexFactory
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
@@ -39,18 +40,21 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Fetch eventi via API ForexFactory
+# Fetch eventi via API ForexFactory (/api?function=get_list)
 # -----------------------------
 def fetch_events():
-    url = "https://forexfactory1.p.rapidapi.com/calendar"
+    url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
     headers = {
         "X-RapidAPI-Key": API_KEY,
-        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com"
+        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com",
+        "Content-Type": "application/json"
     }
+    payload = {}
 
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
+        print("DEBUG API RESPONSE:", json.dumps(data, indent=2))  # debug della struttura
     except Exception as e:
         print("Errore API:", e)
         return []
@@ -58,7 +62,9 @@ def fetch_events():
     events = []
     ALWAYS_NOTIFY = ["PPI", "Core PPI", "CPI", "Non-Farm Payrolls"]
 
-    for item in data.get("events", []):
+    # Aggiorna qui il ciclo se l'API restituisce la lista direttamente o dentro un campo
+    # Per esempio: data.get("events", []) o data.get("calendar", [])
+    for item in data.get("events", []):  # controlla il campo corretto con DEBUG
         currency = item.get("currency")
         if currency not in ["USD", "EUR"]:
             continue
@@ -70,7 +76,7 @@ def fetch_events():
         impact_value = str(item.get("impact", "")).lower()
         ts = int(datetime.now(TIMEZONE).timestamp())
 
-        # Manteniamo tutti gli eventi "high impact" + quelli che vogliamo sempre notificare
+        # Notifica tutti high impact + eventi sempre importanti
         if not (impact_value == "high" or any(k.lower() in headline.lower() for k in ALWAYS_NOTIFY)):
             continue
 
@@ -92,7 +98,6 @@ def fetch_events():
 # -----------------------------
 async def send_daily():
     events = fetch_events()
-
     if not events:
         await application.bot.send_message(
             chat_id=CHAT_ID,
@@ -113,7 +118,6 @@ async def send_daily():
 
 async def send_weekly():
     events = fetch_events()
-
     if not events:
         await application.bot.send_message(
             chat_id=CHAT_ID,
@@ -137,7 +141,6 @@ async def send_weekly():
 # -----------------------------
 async def check_releases():
     events = fetch_events()
-
     for e in events:
         news_id = e["id"]
         if news_id in notified_events:
@@ -145,7 +148,6 @@ async def check_releases():
 
         actual = e.get("actual")
         forecast = e.get("forecast")
-
         impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
         surprise = calculate_surprise(actual, forecast)
 
@@ -166,12 +168,10 @@ async def check_releases():
         notified_events.add(news_id)
 
 # -----------------------------
-# Scheduler (Render usa UTC)
-# 06:00 UTC = 07:00 Italia (inverno)
+# Scheduler
 # -----------------------------
 async def scheduler_loop():
     await application.bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente")
-
     await send_daily()
     await check_releases()
 
