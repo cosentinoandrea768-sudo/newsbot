@@ -51,27 +51,24 @@ def parse_rss_date(datestr):
 
 async def fetch_daily_news():
     feed = feedparser.parse(RSS_ECONOMY)
-    today = datetime.now(pytz.utc).date()
     events = []
 
     for item in feed.entries:
         pub_date = parse_rss_date(item.published_parsed)
-        if pub_date.date() == today:
-            img_url = None
-            if 'media_content' in item and len(item.media_content) > 0:
-                img_url = item.media_content[0].get('url')
-            events.append({
-                "id": item.link,
-                "title": item.title,
-                "link": item.link,
-                "summary": getattr(item, "summary", ""),
-                "image": img_url
-            })
+        img_url = None
+        if 'media_content' in item and len(item.media_content) > 0:
+            img_url = item.media_content[0].get('url')
+        events.append({
+            "id": item.link,
+            "title": item.title,
+            "link": item.link,
+            "summary": getattr(item, "summary", ""),
+            "image": img_url
+        })
     return events
 
 async def fetch_weekly_indicators():
     feed = feedparser.parse(RSS_INDICATORS)
-    week_ago = datetime.now(pytz.utc) - timedelta(days=7)
     events = []
 
     for item in feed.entries:
@@ -99,9 +96,7 @@ async def send_daily_news():
     for e in events:
         if e["id"] in sent_daily:
             continue
-
         msg = f"📰 {e['title']}\n{e.get('summary','')}\n🔗 {e['link']}"
-
         try:
             if e.get("image"):
                 await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
@@ -138,24 +133,24 @@ async def send_weekly_indicators():
             print("[TELEGRAM ERROR]", ex)
 
 # ==============================
-# SCHEDULER
+# SCHEDULER (versione TEST)
 # ==============================
 async def scheduler():
+    # Messaggio di startup
     try:
-        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente")
+        await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente (TEST RSS)")
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
 
-    while True:
-        now = datetime.now(pytz.utc)
-        # Daily news alle 08:00 UTC
-        if now.hour == 8 and now.minute < 5:
-            await send_daily_news()
-        # Weekly indicators lunedì alle 08:00 UTC
-        if now.weekday() == 0 and now.hour == 8 and now.minute < 5:
-            await send_weekly_indicators()
+    # --- INVIO IMMEDIATO PER TEST ---
+    print("[DEBUG] Invio news giornaliere...")
+    await send_daily_news()
+    print("[DEBUG] Invio indicatori settimanali...")
+    await send_weekly_indicators()
 
-        await asyncio.sleep(60)
+    # Loop normale (opzionale)
+    while True:
+        await asyncio.sleep(3600)  # ogni ora
 
 # ==============================
 # MAIN
@@ -165,6 +160,6 @@ if __name__ == "__main__":
 
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
-    Thread(target=run_flask).start()
 
+    Thread(target=run_flask).start()
     asyncio.run(scheduler())
