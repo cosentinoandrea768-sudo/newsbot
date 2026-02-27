@@ -52,7 +52,7 @@ def fetch_economy_news():
         # Traduzione titolo
         title_it = GoogleTranslator(source='auto', target='it').translate(entry.title)
 
-        # Riassunto breve dal feed (description o summary)
+        # Riassunto breve dal feed
         summary_raw = getattr(entry, "summary", "")
         summary_text = unescape(summary_raw).replace("<p>", "").replace("</p>", "").strip()
         summary_it = GoogleTranslator(source='auto', target='it').translate(summary_text) if summary_text else ""
@@ -76,14 +76,13 @@ def fetch_economy_news():
 async def send_economy_news():
     news_items = fetch_economy_news()
     if not news_items:
-        print("[INFO] Nessuna news da inviare")
         return
 
     for item in news_items:
         message = (
             f"📰 BitPath News by Investing.com\n"
             f"{item['title']}\n"
-            f"{item['summary']}\n"  # Riassunto tradotto
+            f"{item['summary']}\n"
             f"🕒 {item['published']}\n"
             f"🔗 {item['link']}"
         )
@@ -98,6 +97,7 @@ async def send_economy_news():
 # SCHEDULER
 # ==============================
 async def scheduler():
+    # Messaggio di avvio
     try:
         await bot.send_message(chat_id=CHAT_ID, text="🚀 Bot Economy News avviato correttamente")
         print("[DEBUG] Messaggio di startup inviato")
@@ -110,7 +110,7 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)
+        await asyncio.sleep(300)  # controlla ogni 5 minuti
 
 # ==============================
 # MAIN
@@ -118,6 +118,7 @@ async def scheduler():
 if __name__ == "__main__":
     from threading import Thread
 
+    # Avvia Flask in background
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
 
