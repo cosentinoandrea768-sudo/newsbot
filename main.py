@@ -56,7 +56,7 @@ def fetch_events():
     }
 
     try:
-        response = requests.post(url, headers=headers, json={}, timeout=15)
+        response = requests.post(url, headers=headers, json={}, timeout=20)
         print("[DEBUG] Status code:", response.status_code)
         print("[DEBUG] Raw response:", response.text[:500])
         response.raise_for_status()
@@ -88,13 +88,13 @@ def fetch_events():
         impact = item.get("impact")
         dateline = item.get("next_dateline")
 
-        print(f"[DEBUG] Checking event: {item.get('name')} | {currency} | {impact}")
+        print(f"[DEBUG] Checking: {item.get('name')} | {currency} | {impact}")
 
-        # Filtro USD / EUR
+        # Filtro solo USD / EUR
         if currency not in ["USD", "EUR"]:
             continue
 
-        # Filtro High Impact (robusto)
+        # Filtro High Impact robusto
         if not impact or "High" not in str(impact):
             continue
 
@@ -111,6 +111,7 @@ def fetch_events():
             continue
 
         graph_data = graph_map.get(dateline, {})
+
         actual = graph_data.get("actual_formatted") or graph_data.get("actual")
         forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
 
@@ -181,31 +182,36 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)
+        await asyncio.sleep(300)  # 5 minuti
 
 # ==============================
-# MAIN
+# MAIN - EVENT LOOP UNICO
 # ==============================
 
 if __name__ == "__main__":
     from threading import Thread
 
-    # Test Telegram immediato
-    async def startup_test():
+    # Avvia Flask in thread separato
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
+
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    async def main():
+        # Test Telegram all'avvio
         try:
             await bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente su Render")
             print("[DEBUG] Startup Telegram OK")
         except Exception as e:
             print("[STARTUP TELEGRAM ERROR]", e)
 
-    asyncio.run(startup_test())
+        # Avvia scheduler come task parallelo
+        asyncio.create_task(scheduler())
 
-    # Avvia Flask
-    def run_flask():
-        app.run(host="0.0.0.0", port=PORT)
+        # Mantiene vivo il loop
+        while True:
+            await asyncio.sleep(3600)
 
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-
-    # Avvia scheduler
-    asyncio.run(scheduler())
+    asyncio.run(main())
