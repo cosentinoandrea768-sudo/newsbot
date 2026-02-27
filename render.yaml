@@ -3,6 +3,6 @@ services:
     name: trading-econ-bot
     env: python
     plan: free
-    runtime: python3.14   # Python 3.14 compatibile con v20.3+
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    runtime: python3.14
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install --no-cache-dir -r requirements.txt
     startCommand: python main.py
