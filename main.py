@@ -14,7 +14,7 @@ import json
 # -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI key per ForexFactory
+API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI ForexFactory
 
 TIMEZONE = pytz.timezone("Europe/Rome")
 notified_events = set()
@@ -25,7 +25,7 @@ notified_events = set()
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
 # -----------------------------
-# Flask keep-alive (Render)
+# Flask keep-alive
 # -----------------------------
 app = Flask("bot")
 
@@ -40,7 +40,7 @@ threading.Thread(
 ).start()
 
 # -----------------------------
-# Fetch eventi via API ForexFactory (/api?function=get_list)
+# Fetch eventi via API ForexFactory
 # -----------------------------
 def fetch_events():
     url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
@@ -54,7 +54,7 @@ def fetch_events():
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
-        print("DEBUG API RESPONSE:", json.dumps(data, indent=2))  # debug della struttura
+        print("DEBUG API RESPONSE:", json.dumps(data[:5], indent=2))  # primo 5 eventi per debug
     except Exception as e:
         print("Errore API:", e)
         return []
@@ -62,18 +62,19 @@ def fetch_events():
     events = []
     ALWAYS_NOTIFY = ["PPI", "Core PPI", "CPI", "Non-Farm Payrolls"]
 
-    for item in data:  # <-- data è già una lista
+    for item in data:
         currency = item.get("currency")
         if currency not in ["USD", "EUR"]:
             continue
 
-        headline = item.get("name")  # nella nuova API il campo si chiama "name"
+        headline = item.get("name")
         if not headline:
             continue
 
         impact_value = str(item.get("impact", "")).lower()
         ts = int(datetime.now(TIMEZONE).timestamp())
 
+        # Considera High impact o eventi sempre notificati
         if not (impact_value == "high" or any(k.lower() in headline.lower() for k in ALWAYS_NOTIFY)):
             continue
 
@@ -96,42 +97,32 @@ def fetch_events():
 async def send_daily():
     events = fetch_events()
     if not events:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text="📅 Oggi non ci sono news importanti USD/EUR."
-        )
+        await application.bot.send_message(chat_id=CHAT_ID, text="📅 Oggi non ci sono news importanti USD/EUR.")
         return
 
     msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
         date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
-        msg += f"{date_str} - {e['headline']}\n"
+        actual = e["actual"] or "N/D"
+        forecast = e["forecast"] or "N/D"
+        msg += f"{date_str} - {e['headline']} (Actual: {actual}, Forecast: {forecast})\n"
 
-    await application.bot.send_message(
-        chat_id=CHAT_ID,
-        text=msg,
-        parse_mode="Markdown"
-    )
+    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
 async def send_weekly():
     events = fetch_events()
     if not events:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text="📆 Questa settimana non ci sono news importanti USD/EUR."
-        )
+        await application.bot.send_message(chat_id=CHAT_ID, text="📆 Questa settimana non ci sono news importanti USD/EUR.")
         return
 
     msg = "📆 *High Impact USD & EUR - Settimana*\n\n"
     for e in events:
         date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%Y-%m-%d %H:%M")
-        msg += f"{date_str} - {e['headline']}\n"
+        actual = e["actual"] or "N/D"
+        forecast = e["forecast"] or "N/D"
+        msg += f"{date_str} - {e['headline']} (Actual: {actual}, Forecast: {forecast})\n"
 
-    await application.bot.send_message(
-        chat_id=CHAT_ID,
-        text=msg,
-        parse_mode="Markdown"
-    )
+    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
 
 # -----------------------------
 # Notifica release con impatto
@@ -145,29 +136,30 @@ async def check_releases():
 
         actual = e.get("actual")
         forecast = e.get("forecast")
+
+        # Notifica solo se actual disponibile
+        if actual is None:
+            continue
+
         impact_label, _ = evaluate_impact(e["headline"], actual, forecast)
         surprise = calculate_surprise(actual, forecast)
 
         msg = (
             f"📊 *{e['headline']}* ({e['currency']})\n\n"
-            f"Actual: {actual or 'N/D'}\n"
+            f"Actual: {actual}\n"
             f"Forecast: {forecast or 'N/D'}\n"
-            f"Surprise: {round(surprise, 2) if surprise else 0}%\n\n"
+            f"Surprise: {round(surprise, 2)}%\n\n"
             f"Impact: {impact_label}"
         )
 
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text=msg,
-            parse_mode="Markdown"
-        )
-
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
         notified_events.add(news_id)
 
 # -----------------------------
 # Scheduler
 # -----------------------------
 async def scheduler_loop():
+    print("🚀 Bot avviato correttamente")
     await application.bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente")
     await send_daily()
     await check_releases()
