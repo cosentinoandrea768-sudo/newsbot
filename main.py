@@ -1,127 +1,99 @@
 import os
 import asyncio
-import json
-from datetime import datetime, timezone
-import http.client
-import pytz
-from telegram import Bot
+import requests
+from datetime import datetime
 from flask import Flask
+from telegram import Bot
 
-# -----------------------------
-# Variabili d'ambiente
-# -----------------------------
-TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
+# ----------------------
+# Config
+# ----------------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 
-if not all([TELEGRAM_TOKEN, CHAT_ID, RAPIDAPI_KEY]):
-    raise ValueError("Assicurati che BOT_TOKEN, CHAT_ID e RAPIDAPI_KEY siano impostati!")
+if not BOT_TOKEN or not CHAT_ID or not RAPIDAPI_KEY:
+    raise ValueError("Variabili BOT_TOKEN, CHAT_ID e RAPIDAPI_KEY devono essere impostate!")
 
-bot = Bot(token=TELEGRAM_TOKEN)
-tz = pytz.timezone("Europe/Rome")  # Orario italiano
+bot = Bot(token=BOT_TOKEN)
+app = Flask(__name__)
 
-# -----------------------------
-# Funzioni di fetch e formatting
-# -----------------------------
+# ----------------------
+# Funzioni helper
+# ----------------------
 def fetch_events():
-    conn = http.client.HTTPSConnection("forexfactory1.p.rapidapi.com")
-    payload = "{}"
+    url = "https://api.example.com/economic-events"  # Inserisci l'endpoint reale RapidAPI
     headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "forexfactory1.p.rapidapi.com",
-        "Content-Type": "application/json"
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "api.example.com"
     }
-
-    conn.request("POST", "/api?function=get_list", payload, headers)
-    res = conn.getresponse()
-    data_raw = res.read()
-    try:
-        data = json.loads(data_raw)
-    except json.JSONDecodeError:
-        print("Errore parsing JSON")
-        return []
-
-    # Filtra solo eventi oggi ad alto impatto USD/EUR
-    today = datetime.now(tz).date()
+    response = requests.get(url, headers=headers)
+    data = response.json()
+    
+    # Filtra solo news ad alto impatto USD/EUR
     events = []
-    for item in data:
-        # Assumendo item abbia 'currency', 'impact', 'name', 'date'
-        if not isinstance(item, dict):
-            continue
+    for item in data.get("events", []):
         currency = item.get("currency")
         impact = item.get("impact")
-        date_str = item.get("date")
-        if not date_str:
-            continue
-        try:
-            event_date = datetime.fromisoformat(date_str).astimezone(tz)
-        except:
-            continue
-
-        if event_date.date() == today and currency in ["USD", "EUR"] and impact == "High":
+        if currency in ["USD", "EUR"] and impact == "high":
             events.append(item)
     return events
 
-def format_event_message(event):
-    name = event.get("name", "Unknown")
-    currency = event.get("currency", "")
-    date_str = event.get("date")
-    if date_str:
-        try:
-            event_time = datetime.fromisoformat(date_str).astimezone(tz).strftime("%H:%M")
-        except:
-            event_time = "??:??"
-    else:
-        event_time = "??:??"
+def format_event(event):
+    dt = event.get("date") or ""
+    title = event.get("title") or ""
+    actual = event.get("actual") or "–"
+    forecast = event.get("forecast") or "–"
+    previous = event.get("previous") or "–"
+    return f"📅 {dt}\n💹 {title}\nActual: {actual} | Forecast: {forecast} | Previous: {previous}"
 
-    actual = event.get("actual", "–")
-    forecast = event.get("forecast", "–")
-    previous = event.get("previous", "–")
-
-    msg = f"📰 {currency} | {name}\n"
-    msg += f"🕒 Ora: {event_time}\n"
-    msg += f"📊 Forecast: {forecast} | Previous: {previous} | Actual: {actual}\n"
-    return msg
-
-# -----------------------------
-# Funzione principale scheduler
-# -----------------------------
 async def send_daily():
     events = fetch_events()
     if not events:
-        print("Nessuna news oggi ad alto impatto USD/EUR")
+        await send_message("⚠️ Nessuna news ad alto impatto disponibile oggi.")
         return
 
-    for event in events:
-        msg = format_event_message(event)
-        try:
-            bot.send_message(chat_id=CHAT_ID, text=msg)
-            print(f"Inviato messaggio: {event.get('name')}")
-        except Exception as e:
-            print(f"Errore invio Telegram: {e}")
+    for e in events:
+        msg = format_event(e)
+        await send_message(msg)
 
+async def send_message(text):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, bot.send_message, CHAT_ID, text)
+
+# ----------------------
+# Scheduler loop
+# ----------------------
 async def scheduler_loop():
-    print("🚀 Scheduler avviato, controllo eventi ogni 5 minuti...")
     while True:
-        await send_daily()
-        await asyncio.sleep(300)  # 5 minuti
+        try:
+            await send_daily()
+        except Exception as ex:
+            print("Errore scheduler:", ex)
+        await asyncio.sleep(300)  # ogni 5 minuti
 
-# -----------------------------
-# Flask Web per Render
-# -----------------------------
-app = Flask(__name__)
-
+# ----------------------
+# Flask routes (health check)
+# ----------------------
 @app.route("/")
 def index():
-    return "Bot attivo e scheduler in esecuzione!"
+    return "Bot attivo e in ascolto!"
 
-# -----------------------------
-# Avvio main
-# -----------------------------
+# ----------------------
+# Main
+# ----------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"🚀 Bot avviato correttamente! In ascolto sulla porta {port}")
-    # Avvia loop asyncio scheduler
-    asyncio.create_task(scheduler_loop())
-    # Avvia Flask per endpoint
-    app.run(host="0.0.0.0", port=port)
+
+    async def main_loop():
+        # Avvia scheduler in background
+        asyncio.create_task(scheduler_loop())
+        # Avvia Flask in thread separato
+        from threading import Thread
+        Thread(target=lambda: app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)).start()
+        # Mantieni vivo il loop
+        while True:
+            await asyncio.sleep(3600)
+
+    asyncio.run(main_loop())
