@@ -44,7 +44,6 @@ RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
 # FETCH NEWS
 # ==============================
 def parse_rss_date(datestr):
-    """Parse feedparser date in UTC datetime"""
     try:
         return datetime(*datestr[:6], tzinfo=pytz.utc)
     except:
@@ -58,11 +57,15 @@ async def fetch_daily_news():
     for item in feed.entries:
         pub_date = parse_rss_date(item.published_parsed)
         if pub_date.date() == today:
+            img_url = None
+            if 'media_content' in item and len(item.media_content) > 0:
+                img_url = item.media_content[0].get('url')
             events.append({
                 "id": item.link,
                 "title": item.title,
                 "link": item.link,
-                "summary": getattr(item, "summary", "")
+                "summary": getattr(item, "summary", ""),
+                "image": img_url
             })
     return events
 
@@ -73,6 +76,9 @@ async def fetch_weekly_indicators():
 
     for item in feed.entries:
         pub_date = parse_rss_date(item.published_parsed)
+        img_url = None
+        if 'media_content' in item and len(item.media_content) > 0:
+            img_url = item.media_content[0].get('url')
         events.append({
             "id": item.link,
             "name": item.title,
@@ -80,7 +86,8 @@ async def fetch_weekly_indicators():
             "pub_date": pub_date,
             "previous": getattr(item, "previous", "-"),
             "forecast": getattr(item, "forecast", "-"),
-            "actual": getattr(item, "actual", "-")  # se non ancora disponibile
+            "actual": getattr(item, "actual", "-"),
+            "image": img_url
         })
     return events
 
@@ -92,9 +99,14 @@ async def send_daily_news():
     for e in events:
         if e["id"] in sent_daily:
             continue
+
         msg = f"📰 {e['title']}\n{e.get('summary','')}\n🔗 {e['link']}"
+
         try:
-            await bot.send_message(chat_id=CHAT_ID, text=msg)
+            if e.get("image"):
+                await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
+            else:
+                await bot.send_message(chat_id=CHAT_ID, text=msg)
             sent_daily.add(e["id"])
         except Exception as ex:
             print("[TELEGRAM ERROR]", ex)
@@ -105,6 +117,7 @@ async def send_weekly_indicators():
         prev_data = sent_weekly.get(e["id"], {"actual":"-", "impact":"⚪ Neutro"})
         actual = e.get("actual", "-") or prev_data["actual"]
         label, score = evaluate_impact(e["name"], actual, e.get("forecast", "-"))
+
         msg = (
             f"📊 {e['name']}\n"
             f"🕒 Orario uscita: {e['pub_date'].strftime('%Y-%m-%d %H:%M UTC')}\n"
@@ -114,8 +127,12 @@ async def send_weekly_indicators():
             f"Impact: {label}\n"
             f"🔗 {e['link']}"
         )
+
         try:
-            await bot.send_message(chat_id=CHAT_ID, text=msg)
+            if e.get("image"):
+                await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
+            else:
+                await bot.send_message(chat_id=CHAT_ID, text=msg)
             sent_weekly[e["id"]] = {"actual": actual, "impact": label}
         except Exception as ex:
             print("[TELEGRAM ERROR]", ex)
@@ -131,26 +148,23 @@ async def scheduler():
 
     while True:
         now = datetime.now(pytz.utc)
-        # Invia news giornaliere alle 08:00 UTC
+        # Daily news alle 08:00 UTC
         if now.hour == 8 and now.minute < 5:
             await send_daily_news()
-        # Invia indicatori settimanali lunedì alle 08:00 UTC
+        # Weekly indicators lunedì alle 08:00 UTC
         if now.weekday() == 0 and now.hour == 8 and now.minute < 5:
             await send_weekly_indicators()
 
-        await asyncio.sleep(60)  # controlla ogni minuto
+        await asyncio.sleep(60)
 
 # ==============================
 # MAIN
 # ==============================
 if __name__ == "__main__":
     from threading import Thread
-    import schedule
 
-    # Avvia Flask in background
     def run_flask():
         app.run(host="0.0.0.0", port=PORT)
     Thread(target=run_flask).start()
 
-    # Avvia scheduler
     asyncio.run(scheduler())
