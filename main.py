@@ -1,9 +1,10 @@
 import os
 import asyncio
-import feedparser
-from deep_translator import GoogleTranslator
+from datetime import datetime
 from flask import Flask
 from telegram import Bot
+import feedparser
+from deep_translator import GoogleTranslator
 
 # ==============================
 # ENV VARS
@@ -24,48 +25,63 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot attivo ✅"
+    return "Bot Economy News attivo ✅"
 
 # ==============================
-# RSS ECONOMY NEWS
+# GLOBAL STATE
 # ==============================
-ECONOMY_RSS_URL = "https://www.investing.com/rss/news_25.rss"  # Economy News RSS
+sent_news = set()
 
-sent_items = set()
+# ==============================
+# FEED RSS
+# ==============================
+ECONOMY_RSS = "https://www.investing.com/rss/news_25.rss"  # Economy News
 
-async def fetch_economy_news():
-    feed = feedparser.parse(ECONOMY_RSS_URL)
-    return feed.entries
+# ==============================
+# FETCH NEWS
+# ==============================
+def fetch_economy_news():
+    feed = feedparser.parse(ECONOMY_RSS)
+    news_items = []
 
-async def send_economy_news():
-    entries = await fetch_economy_news()
-
-    for entry in entries:
-        # Evita doppioni
-        if entry.id in sent_items:
+    for entry in feed.entries:
+        news_id = getattr(entry, "id", entry.link)  # usa link se id non esiste
+        if news_id in sent_news:
             continue
 
-        title = entry.get("title", "")
-        link = entry.get("link", "")
-        published = entry.get("published", "")
+        title_it = GoogleTranslator(source='auto', target='it').translate(entry.title)
+        published = getattr(entry, "published", "N/A")
+        link = entry.link
 
-        # Traduzione in italiano
-        try:
-            title_it = GoogleTranslator(source='auto', target='it').translate(title)
-        except Exception:
-            title_it = title  # fallback se Google Translator fallisce
+        news_items.append({
+            "id": news_id,
+            "title": title_it,
+            "published": published,
+            "link": link
+        })
 
+    return news_items
+
+# ==============================
+# SEND TELEGRAM
+# ==============================
+async def send_economy_news():
+    news_items = fetch_economy_news()
+    if not news_items:
+        print("[INFO] Nessuna news da inviare")
+        return
+
+    for item in news_items:
         message = (
             f"📰 Economia News\n"
-            f"{title_it}\n"
-            f"🕒 {published}\n"
-            f"🔗 {link}"
+            f"{item['title']}\n"
+            f"🕒 {item['published']}\n"
+            f"🔗 {item['link']}"
         )
-
         try:
             await bot.send_message(chat_id=CHAT_ID, text=message)
-            sent_items.add(entry.id)
-            print(f"[SENT] {title}")
+            sent_news.add(item["id"])
+            print(f"[SENT] {item['title']}")
         except Exception as e:
             print("[TELEGRAM ERROR]", e)
 
@@ -86,7 +102,7 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)  # controlla ogni 5 minuti
+        await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
 # MAIN
