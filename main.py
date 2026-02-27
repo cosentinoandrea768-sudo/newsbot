@@ -1,4 +1,3 @@
-import os
 import asyncio
 from datetime import datetime
 import pytz
@@ -8,25 +7,19 @@ from deep_translator import GoogleTranslator
 from impact_logic import evaluate_impact
 
 # ==============================
-# ENV VARS
+# CONFIG
 # ==============================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("BOT_TOKEN o CHAT_ID non impostati")
+BOT_TOKEN = "INSERISCI_IL_TUO_BOT_TOKEN"
+CHAT_ID = "INSERISCI_IL_TUO_CHAT_ID"
 
 bot = Bot(token=BOT_TOKEN)
 translator = GoogleTranslator(source='en', target='it')
 
-# ==============================
-# RSS URL
-# ==============================
 RSS_ECONOMY = "https://www.investing.com/rss/news_14.rss"
 RSS_INDICATORS = "https://www.investing.com/rss/news_95.rss"
 
 # ==============================
-# FETCH NEWS
+# HELPERS
 # ==============================
 def parse_rss_date(datestr):
     try:
@@ -34,6 +27,9 @@ def parse_rss_date(datestr):
     except:
         return datetime.now(pytz.utc)
 
+# ==============================
+# FETCH NEWS
+# ==============================
 async def fetch_daily_news():
     feed = feedparser.parse(RSS_ECONOMY)
     today = datetime.now(pytz.utc).date()
@@ -51,7 +47,8 @@ async def fetch_daily_news():
             "title": item.title,
             "link": item.link,
             "summary": getattr(item, "summary", ""),
-            "image": img_url
+            "image": img_url,
+            "pub_date": pub_date.strftime("%Y-%m-%d %H:%M UTC")
         })
     return events
 
@@ -59,19 +56,25 @@ async def fetch_indicators():
     feed = feedparser.parse(RSS_INDICATORS)
     events = []
     for item in feed.entries:
+        title = item.title
+        # --- FILTRO HIGH IMPACT e USD/EUR ---
+        if "[USD]" not in title and "[EUR]" not in title:
+            continue
+        if "High Impact" not in title:
+            continue
         pub_date = parse_rss_date(item.published_parsed)
         events.append({
             "id": item.link,
-            "name": item.title,
+            "name": title,
             "pub_date": pub_date,
             "previous": getattr(item, "previous","-"),
             "forecast": getattr(item, "forecast","-"),
-            "actual": getattr(item, "actual","-")
+            "actual": getattr(item, "actual","-"),
         })
     return events
 
 # ==============================
-# INVIO TELEGRAM
+# SEND NEWS
 # ==============================
 async def send_daily_news():
     events = await fetch_daily_news()
@@ -82,7 +85,12 @@ async def send_daily_news():
         except:
             titolo_it = e["title"]
             summary_it = e.get("summary","")
-        msg = f"📰 {titolo_it}\n{summary_it}\n🔗 {e['link']}"
+        msg = (
+            f"📰 {titolo_it}\n"
+            f"🕒 Pubblicato: {e['pub_date']}\n"
+            f"{summary_it}\n"
+            f"🔗 {e['link']}"
+        )
         try:
             if e.get("image"):
                 await bot.send_photo(chat_id=CHAT_ID, photo=e["image"], caption=msg)
@@ -114,11 +122,11 @@ async def send_indicators():
             print("[TELEGRAM ERROR]", ex)
 
 # ==============================
-# TEST SCHEDULER
+# MAIN TEST
 # ==============================
-async def test():
+async def main():
     await send_daily_news()
     await send_indicators()
 
 if __name__ == "__main__":
-    asyncio.run(test())
+    asyncio.run(main())
