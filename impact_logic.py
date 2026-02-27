@@ -1,5 +1,5 @@
 # -----------------------------
-# impact_logic.py (robusta)
+# impact_logic.py (robusta, pronta per Render)
 # -----------------------------
 
 # --- Funzioni di utilità ---
