@@ -1,101 +1,163 @@
 import os
+import asyncio
+import schedule
 import requests
-import time
 from datetime import datetime
+import pytz
 from flask import Flask
-from telegram import Bot
-from threading import Thread
+from telegram.ext import ApplicationBuilder
+import json
 
-# ----------------------
-# Config
-# ----------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
+# -----------------------------
+# Variabili ambiente
+# -----------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+API_KEY = os.getenv("RAPIDAPI_KEY")  # RapidAPI ForexFactory
 
-bot = Bot(token=BOT_TOKEN)
-app = Flask(__name__)
+TIMEZONE = pytz.timezone("Europe/Rome")
+notified_events = set()
 
-# ----------------------
-# Funzioni helper
-# ----------------------
+# -----------------------------
+# Bot Telegram asincrono
+# -----------------------------
+application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# -----------------------------
+# Flask keep-alive
+# -----------------------------
+app = Flask("bot")
+
+@app.route("/")
+def home():
+    return "🤖 Bot economico attivo!"
+
+import threading
+threading.Thread(
+    target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))),
+    daemon=True
+).start()
+
+# -----------------------------
+# Keywords per filtraggio eventi
+# -----------------------------
+HIGH_IMPACT_KEYWORDS = ["ppi", "core ppi"]
+
+# -----------------------------
+# Fetch eventi filtrati High Impact USD/EUR
+# -----------------------------
 def fetch_events():
-    url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"  # Endpoint reale RapidAPI
+    url = "https://forexfactory1.p.rapidapi.com/api?function=get_list"
     headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com"
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": "forexfactory1.p.rapidapi.com",
+        "Content-Type": "application/json"
     }
+    payload = {}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         data = response.json()
+        # DEBUG primi 5 eventi
+        print("DEBUG API RESPONSE:", json.dumps(data[:5], indent=2))
     except Exception as e:
-        print("Errore fetch_events:", e)
+        print("Errore API:", e)
         return []
 
     events = []
-    for item in data.get("events", []):
+    ts_now = int(datetime.now(TIMEZONE).timestamp())
+    for item in data:
         currency = item.get("currency")
-        impact = item.get("impact")
-        if currency in ["USD", "EUR"] and impact == "high":
-            events.append(item)
+        headline = item.get("name")
+        impact_value = str(item.get("impact", "")).lower()
+
+        # Filtra solo USD/EUR e High Impact o parole chiave PPI/Core PPI
+        if currency not in ["USD", "EUR"]:
+            continue
+        if impact_value != "high" and not any(k in headline.lower() for k in HIGH_IMPACT_KEYWORDS):
+            continue
+
+        events.append({
+            "id": item.get("id", f"{headline}_{ts_now}"),
+            "currency": currency,
+            "headline": headline,
+            "actual": item.get("actual"),
+            "forecast": item.get("forecast"),
+            "previous": item.get("previous"),
+            "impact": impact_value,
+            "datetime": ts_now
+        })
     return events
 
-def format_event(event):
-    dt = event.get("date") or "–"
-    title = event.get("title") or "–"
-    actual = event.get("actual") or "–"
-    forecast = event.get("forecast") or "–"
-    previous = event.get("previous") or "–"
-    return f"📅 {dt}\n💹 {title}\nActual: {actual} | Forecast: {forecast} | Previous: {previous}"
-
-def send_daily():
+# -----------------------------
+# Messaggio giornaliero leggibile
+# -----------------------------
+async def send_daily():
     events = fetch_events()
     if not events:
-        print("⚠️ Nessuna news ad alto impatto disponibile oggi.")
-        bot.send_message(chat_id=CHAT_ID, text="⚠️ Nessuna news ad alto impatto disponibile oggi.")
+        await application.bot.send_message(
+            chat_id=CHAT_ID,
+            text="📅 Oggi non ci sono news High Impact USD/EUR."
+        )
         return
 
-    print(f"Invio {len(events)} eventi su Telegram...")
+    msg = "📅 *High Impact USD & EUR - Oggi*\n\n"
     for e in events:
-        msg = format_event(e)
-        try:
-            bot.send_message(chat_id=CHAT_ID, text=msg)
-        except Exception as ex:
-            print("Errore invio Telegram:", ex)
+        date_str = datetime.fromtimestamp(e["datetime"], TIMEZONE).strftime("%H:%M")
+        actual = e["actual"] or "N/D"
+        forecast = e["forecast"] or "N/D"
+        previous = e["previous"] or "N/D"
 
-# ----------------------
-# Scheduler loop
-# ----------------------
-def scheduler_loop():
-    # Messaggio di avvio
-    try:
-        bot.send_message(chat_id=CHAT_ID, text="🚀 Bot avviato correttamente e in ascolto!")
-    except Exception as ex:
-        print("Errore invio messaggio avvio:", ex)
+        msg += f"*{e['headline']}* ({e['currency']})\n"
+        msg += f"🕒 {date_str} | Forecast: {forecast} | Previous: {previous} | Actual: {actual}\n\n"
+
+    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+
+# -----------------------------
+# Notifica release con impatto
+# -----------------------------
+async def check_releases():
+    events = fetch_events()
+    for e in events:
+        news_id = e["id"]
+        if news_id in notified_events:
+            continue
+
+        actual = e.get("actual")
+        forecast = e.get("forecast")
+
+        # Notifica solo se actual disponibile
+        if actual is None:
+            continue
+
+        msg = (
+            f"📊 *{e['headline']}* ({e['currency']})\n\n"
+            f"Actual: {actual}\n"
+            f"Forecast: {forecast or 'N/D'}\n"
+            f"Previous: {e.get('previous') or 'N/D'}\n"
+            f"Impact: {e['impact'].capitalize()}"
+        )
+
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+        notified_events.add(news_id)
+
+# -----------------------------
+# Scheduler asincrono
+# -----------------------------
+async def scheduler_loop():
+    print("🚀 Bot avviato correttamente")
+    await application.bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente")
+    await send_daily()
+    await check_releases()
+
+    schedule.every().day.at("06:00").do(lambda: asyncio.create_task(send_daily()))
+    schedule.every(5).minutes.do(lambda: asyncio.create_task(check_releases()))
 
     while True:
-        try:
-            send_daily()
-        except Exception as ex:
-            print("Errore scheduler:", ex)
-        time.sleep(300)  # ogni 5 minuti
+        schedule.run_pending()
+        await asyncio.sleep(30)
 
-# ----------------------
-# Flask route
-# ----------------------
-@app.route("/")
-def index():
-    return "Bot attivo e in ascolto!"
-
-# ----------------------
-# Main
-# ----------------------
+# -----------------------------
+# Avvio
+# -----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Bot avviato correttamente! In ascolto sulla porta {port}")
-
-    # Avvia scheduler in un thread separato
-    Thread(target=scheduler_loop, daemon=True).start()
-
-    # Avvia Flask
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    asyncio.run(scheduler_loop())
