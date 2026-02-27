@@ -57,6 +57,8 @@ def fetch_events():
 
     try:
         response = requests.post(url, headers=headers, json={}, timeout=15)
+        print("[DEBUG] Status code:", response.status_code)
+        print("[DEBUG] Raw response:", response.text[:500])
         response.raise_for_status()
     except requests.RequestException as e:
         print("[API ERROR]", e)
@@ -66,11 +68,13 @@ def fetch_events():
         data = response.json()
     except json.JSONDecodeError:
         print("[JSON ERROR] Risposta non valida")
-        print(response.text)
         return []
 
     description = data.get("description", [])
     graph = data.get("graph", [])
+
+    print(f"[DEBUG] Description count: {len(description)}")
+    print(f"[DEBUG] Graph count: {len(graph)}")
 
     graph_map = {g.get("dateline"): g for g in graph if isinstance(g, dict)}
 
@@ -84,15 +88,16 @@ def fetch_events():
         impact = item.get("impact")
         dateline = item.get("next_dateline")
 
-        # Filtro solo USD / EUR
+        print(f"[DEBUG] Checking event: {item.get('name')} | {currency} | {impact}")
+
+        # Filtro USD / EUR
         if currency not in ["USD", "EUR"]:
             continue
 
-        # Solo High Impact
-        if impact != "High":
+        # Filtro High Impact (robusto)
+        if not impact or "High" not in str(impact):
             continue
 
-        # Solo oggi
         if not dateline:
             continue
 
@@ -105,7 +110,6 @@ def fetch_events():
         if event_time.date() != today:
             continue
 
-        # Prende actual / forecast dal graph se esiste
         graph_data = graph_map.get(dateline, {})
         actual = graph_data.get("actual_formatted") or graph_data.get("actual")
         forecast = graph_data.get("forecast_formatted") or graph_data.get("forecast")
@@ -121,6 +125,7 @@ def fetch_events():
 
         events.append(event)
 
+    print(f"[DEBUG] Filtered events today: {len(events)}")
     return events
 
 # ==============================
@@ -131,21 +136,23 @@ async def send_events():
     events = fetch_events()
 
     if not events:
-        print("[INFO] Nessuna news oggi")
+        print("[INFO] Nessuna news filtrata oggi")
         return
-
-    print(f"[INFO] Eventi trovati: {len(events)}")
 
     for event in events:
 
         if event["id"] in sent_events:
             continue
 
-        label, score = evaluate_impact(
-            event["name"],
-            event["actual"],
-            event["forecast"]
-        )
+        try:
+            label, score = evaluate_impact(
+                event["name"],
+                event["actual"],
+                event["forecast"]
+            )
+        except Exception as e:
+            print("[IMPACT ERROR]", e)
+            label, score = "N/A", 0
 
         message = (
             f"📊 {event['currency']} HIGH IMPACT\n"
@@ -164,7 +171,7 @@ async def send_events():
             print("[TELEGRAM ERROR]", e)
 
 # ==============================
-# SCHEDULER ROBUSTO
+# SCHEDULER
 # ==============================
 
 async def scheduler():
@@ -174,13 +181,31 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)  # controlla ogni 5 minuti
+        await asyncio.sleep(300)
 
 # ==============================
 # MAIN
 # ==============================
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(scheduler())
-    app.run(host="0.0.0.0", port=PORT)
+    from threading import Thread
+
+    # Test Telegram immediato
+    async def startup_test():
+        try:
+            await bot.send_message(chat_id=CHAT_ID, text="✅ Bot avviato correttamente su Render")
+            print("[DEBUG] Startup Telegram OK")
+        except Exception as e:
+            print("[STARTUP TELEGRAM ERROR]", e)
+
+    asyncio.run(startup_test())
+
+    # Avvia Flask
+    def run_flask():
+        app.run(host="0.0.0.0", port=PORT)
+
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
+
+    # Avvia scheduler
+    asyncio.run(scheduler())
