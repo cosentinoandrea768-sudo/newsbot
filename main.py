@@ -1,66 +1,77 @@
 import os
-import json
 import asyncio
-import datetime
+import json
 import pytz
+from datetime import datetime
 from flask import Flask
-from impact_logic import evaluate_impact, calculate_surprise
+from telegram import Bot
 from telegram.ext import ApplicationBuilder
-import http.client
+import requests
+from impact_logic import evaluate_impact, calculate_surprise
 
+# -----------------------------
+# Config e variabili ambiente
+# -----------------------------
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+
+if not RAPIDAPI_KEY or not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("Assicurati che le env vars RAPIDAPI_KEY, BOT_TOKEN e CHAT_ID siano settate.")
+
+# -----------------------------
+# Flask app per Render
+# -----------------------------
 app = Flask(__name__)
 
-# Legge la porta da Render (variabile d'ambiente PORT)
-PORT = int(os.getenv("PORT", 10000))  # fallback a 10000 se non esiste
+@app.route("/")
+def home():
+    return "Bot running!"
 
-# Telegram Bot setup
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-rapidapi_key = os.getenv("RAPIDAPI_KEY")
+# -----------------------------
+# Funzioni bot
+# -----------------------------
+async def send_daily():
+    events = fetch_events()
+    bot = Bot(token=BOT_TOKEN)
+    for event in events:
+        name = event.get("event")
+        actual = event.get("actual")
+        forecast = event.get("forecast")
+        label, score = evaluate_impact(name, actual, forecast)
+        message = f"{name}\nActual: {actual}\nForecast: {forecast}\nImpact: {label} ({score})"
+        await bot.send_message(chat_id=CHAT_ID, text=message)
 
-# Esempio: funzione per fetch eventi dall'API ForexFactory
 def fetch_events():
-    conn = http.client.HTTPSConnection("forexfactory1.p.rapidapi.com")
-    payload = "{}"
+    url = "https://mcp.rapidapi.com/get_list"
     headers = {
-        'x-rapidapi-key': rapidapi_key,
-        'x-rapidapi-host': "forexfactory1.p.rapidapi.com",
-        'Content-Type': "application/json"
+        "x-api-host": "forexfactory1.p.rapidapi.com",
+        "x-api-key": RAPIDAPI_KEY,
+        "Content-Type": "application/json"
     }
-    conn.request("POST", "/api?function=get_list", payload, headers)
-    res = conn.getresponse()
-    data = res.read()
-    items = json.loads(data)
-    return items
+    body = {"some_param": "value"}  # eventuale payload richiesto dalla tua API
+    response = requests.post(url, headers=headers, json=body)
+    data = response.json()
+    
+    # Assicuriamoci di avere una lista di dict
+    events = []
+    for item in data.get("events", []):
+        if isinstance(item, dict):
+            events.append(item)
+    return events
 
-# Scheduler loop esempio
 async def scheduler_loop():
     while True:
         await send_daily()
-        await asyncio.sleep(60*60)  # ogni ora (esempio)
+        await asyncio.sleep(60*60)  # controlla ogni ora
 
-async def send_daily():
-    events = fetch_events()
-    # qui va la logica per filtrare eventi odierni, calcolare impact, inviare Telegram, ecc.
-    print(f"Fetched {len(events)} events")
-
-# Flask route base
-@app.route("/")
-def index():
-    return "Bot running", 200
-
+# -----------------------------
+# Avvio
+# -----------------------------
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Render richiede PORT
+    # Avvio Flask
     from threading import Thread
-
-    # Avvia Flask in un thread separato
-    def run_flask():
-        app.run(host="0.0.0.0", port=PORT)
-
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-
-    # Avvia lo scheduler nel main thread
-    try:
-        asyncio.run(scheduler_loop())
-    except KeyboardInterrupt:
-        print("⚠️ Bot interrotto manualmente")
+    Thread(target=lambda: app.run(host="0.0.0.0", port=port)).start()
+    # Avvio bot loop
+    asyncio.run(scheduler_loop())
