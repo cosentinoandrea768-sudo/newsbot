@@ -33,7 +33,7 @@ def home():
 sent_news = set()
 
 # ==============================
-# FEED RSS MULTIPLI
+# RSS FEEDS
 # ==============================
 RSS_FEEDS = [
     "https://www.investing.com/rss/news_14.rss",   # Economy
@@ -42,6 +42,39 @@ RSS_FEEDS = [
     "https://www.investing.com/rss/news_357.rss",
     "https://www.investing.com/rss/news_11.rss"
 ]
+
+# ==============================
+# STARTUP TEST FEEDS
+# ==============================
+async def test_all_feeds():
+    for feed_url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+
+            if not feed.entries:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=f"⚠️ Nessuna news trovata per feed:\n{feed_url}"
+                )
+                continue
+
+            entry = feed.entries[0]
+
+            message = (
+                f"🧪 TEST RSS\n"
+                f"Feed: {feed_url}\n\n"
+                f"{entry.title}\n"
+                f"🕒 {getattr(entry, 'published', 'N/A')}\n"
+                f"🔗 {entry.link}"
+            )
+
+            await bot.send_message(chat_id=CHAT_ID, text=message)
+
+        except Exception as e:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"❌ ERRORE feed:\n{feed_url}\n{e}"
+            )
 
 # ==============================
 # FETCH NEWS
@@ -64,7 +97,7 @@ def fetch_news():
             except:
                 title_it = entry.title
 
-            # Riassunto breve
+            # Riassunto
             summary_raw = getattr(entry, "summary", "")
             summary_text = (
                 unescape(summary_raw)
@@ -81,21 +114,18 @@ def fetch_news():
             except:
                 summary_it = summary_text
 
-            published = getattr(entry, "published", "N/A")
-            link = entry.link
-
             news_items.append({
                 "id": news_id,
                 "title": title_it,
                 "summary": summary_it,
-                "published": published,
-                "link": link
+                "published": getattr(entry, "published", "N/A"),
+                "link": entry.link
             })
 
     return news_items
 
 # ==============================
-# SEND TELEGRAM
+# SEND NEWS
 # ==============================
 async def send_news():
     news_items = fetch_news()
@@ -122,17 +152,23 @@ async def send_news():
 # SCHEDULER
 # ==============================
 async def scheduler():
-    # Messaggio di avvio
+
+    # Startup message
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
             text="🚀 Bot Economy News avviato correttamente"
         )
-        print("[DEBUG] Messaggio di startup inviato")
+
+        # 🔥 Test immediato di tutti i feed
+        await test_all_feeds()
+
+        print("[DEBUG] Startup completato con test feed")
+
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
 
-    # Registriamo le news già presenti in TUTTI i feed
+    # Registriamo le news già presenti per evitare invio storico
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
         for entry in feed.entries:
