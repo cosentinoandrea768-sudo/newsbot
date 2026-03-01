@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot Economy News attivo ✅"
+    return "Bot Economy News TEST attivo ✅"
 
 # ==============================
 # GLOBAL STATE
@@ -33,15 +33,29 @@ def home():
 sent_news = set()
 
 # ==============================
+# TRANSLATOR (istanza unica)
+# ==============================
+translator = GoogleTranslator(source='auto', target='it')
+
+# ==============================
 # RSS FEEDS
 # ==============================
 RSS_FEEDS = [
-    "https://www.investing.com/rss/news_14.rss",   # Economy
+    "https://www.investing.com/rss/news_14.rss",
     "https://www.investing.com/rss/news_301.rss",
     "https://www.investing.com/rss/news_355.rss",
     "https://www.investing.com/rss/news_357.rss",
     "https://www.investing.com/rss/news_11.rss"
 ]
+
+# ==============================
+# FUNZIONE TRADUZIONE SICURA
+# ==============================
+def translate_text(text):
+    try:
+        return translator.translate(text)
+    except:
+        return text
 
 # ==============================
 # STARTUP TEST FEEDS
@@ -54,16 +68,28 @@ async def test_all_feeds():
             if not feed.entries:
                 await bot.send_message(
                     chat_id=CHAT_ID,
-                    text=f"⚠️ Nessuna news trovata per feed:\n{feed_url}"
+                    text=f"⚠️ Nessuna news trovata:\n{feed_url}"
                 )
                 continue
 
             entry = feed.entries[0]
 
+            title_it = translate_text(entry.title)
+
+            summary_raw = getattr(entry, "summary", "")
+            summary_text = (
+                unescape(summary_raw)
+                .replace("<p>", "")
+                .replace("</p>", "")
+                .strip()
+            )
+            summary_it = translate_text(summary_text) if summary_text else ""
+
             message = (
                 f"🧪 TEST RSS\n"
-                f"Feed: {feed_url}\n\n"
-                f"{entry.title}\n"
+                f"{feed_url}\n\n"
+                f"{title_it}\n"
+                f"{summary_it}\n"
                 f"🕒 {getattr(entry, 'published', 'N/A')}\n"
                 f"🔗 {entry.link}"
             )
@@ -91,13 +117,8 @@ def fetch_news():
             if news_id in sent_news:
                 continue
 
-            # Traduzione titolo
-            try:
-                title_it = GoogleTranslator(source='auto', target='it').translate(entry.title)
-            except:
-                title_it = entry.title
+            title_it = translate_text(entry.title)
 
-            # Riassunto
             summary_raw = getattr(entry, "summary", "")
             summary_text = (
                 unescape(summary_raw)
@@ -105,14 +126,7 @@ def fetch_news():
                 .replace("</p>", "")
                 .strip()
             )
-
-            try:
-                summary_it = (
-                    GoogleTranslator(source='auto', target='it').translate(summary_text)
-                    if summary_text else ""
-                )
-            except:
-                summary_it = summary_text
+            summary_it = translate_text(summary_text) if summary_text else ""
 
             news_items.append({
                 "id": news_id,
@@ -129,12 +143,14 @@ def fetch_news():
 # ==============================
 async def send_news():
     news_items = fetch_news()
+
     if not news_items:
+        print("[DEBUG] Nessuna nuova news")
         return
 
     for item in news_items:
         message = (
-            f"📰 BitPath News by Investing.com\n"
+            f"📰 BitPath News TEST\n"
             f"{item['title']}\n"
             f"{item['summary']}\n"
             f"🕒 {item['published']}\n"
@@ -153,36 +169,31 @@ async def send_news():
 # ==============================
 async def scheduler():
 
-    # Startup message
+    # Startup
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="🚀 Bot Economy News avviato correttamente"
+            text="🚀 Bot Economy News TEST avviato"
         )
 
         # 🔥 Test immediato di tutti i feed
         await test_all_feeds()
 
-        print("[DEBUG] Startup completato con test feed")
+        print("[DEBUG] Test feed completato")
 
     except Exception as e:
         print("[TELEGRAM ERROR] Startup:", e)
 
-    # Registriamo le news già presenti per evitare invio storico
-    for feed_url in RSS_FEEDS:
-        feed = feedparser.parse(feed_url)
-        for entry in feed.entries:
-            news_id = getattr(entry, "id", entry.link)
-            sent_news.add(news_id)
+    # ⚠️ MODALITÀ TEST:
+    # NON registriamo subito le news per vedere se funzionano
 
-    # Loop continuo
     while True:
         try:
             await send_news()
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)  # 5 minuti
+        await asyncio.sleep(120)  # 2 minuti per test rapido
 
 # ==============================
 # MAIN
