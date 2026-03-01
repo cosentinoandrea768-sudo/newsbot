@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 from flask import Flask
 from telegram import Bot
@@ -25,17 +26,35 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot Economy News TEST attivo ✅"
+    return "Bot Economy News LIVE ✅"
 
 # ==============================
-# GLOBAL STATE
+# FILE PERSISTENZA
 # ==============================
-sent_news = set()
+STORAGE_FILE = "sent_news.json"
+
+def load_sent_news():
+    if os.path.exists(STORAGE_FILE):
+        with open(STORAGE_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
+
+def save_sent_news(data):
+    with open(STORAGE_FILE, "w") as f:
+        json.dump(list(data), f)
+
+sent_news = load_sent_news()
 
 # ==============================
-# TRANSLATOR (istanza unica)
+# TRANSLATOR
 # ==============================
 translator = GoogleTranslator(source='auto', target='it')
+
+def translate_text(text):
+    try:
+        return translator.translate(text)
+    except:
+        return text
 
 # ==============================
 # RSS FEEDS
@@ -49,64 +68,10 @@ RSS_FEEDS = [
 ]
 
 # ==============================
-# FUNZIONE TRADUZIONE SICURA
+# FETCH NEW NEWS
 # ==============================
-def translate_text(text):
-    try:
-        return translator.translate(text)
-    except:
-        return text
-
-# ==============================
-# STARTUP TEST FEEDS
-# ==============================
-async def test_all_feeds():
-    for feed_url in RSS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-
-            if not feed.entries:
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=f"⚠️ Nessuna news trovata:\n{feed_url}"
-                )
-                continue
-
-            entry = feed.entries[0]
-
-            title_it = translate_text(entry.title)
-
-            summary_raw = getattr(entry, "summary", "")
-            summary_text = (
-                unescape(summary_raw)
-                .replace("<p>", "")
-                .replace("</p>", "")
-                .strip()
-            )
-            summary_it = translate_text(summary_text) if summary_text else ""
-
-            message = (
-                f"🧪 TEST RSS\n"
-                f"{feed_url}\n\n"
-                f"{title_it}\n"
-                f"{summary_it}\n"
-                f"🕒 {getattr(entry, 'published', 'N/A')}\n"
-                f"🔗 {entry.link}"
-            )
-
-            await bot.send_message(chat_id=CHAT_ID, text=message)
-
-        except Exception as e:
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"❌ ERRORE feed:\n{feed_url}\n{e}"
-            )
-
-# ==============================
-# FETCH NEWS
-# ==============================
-def fetch_news():
-    news_items = []
+def fetch_new_news():
+    new_items = []
 
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
@@ -128,7 +93,7 @@ def fetch_news():
             )
             summary_it = translate_text(summary_text) if summary_text else ""
 
-            news_items.append({
+            new_items.append({
                 "id": news_id,
                 "title": title_it,
                 "summary": summary_it,
@@ -136,13 +101,13 @@ def fetch_news():
                 "link": entry.link
             })
 
-    return news_items
+    return new_items
 
 # ==============================
 # SEND NEWS
 # ==============================
 async def send_news():
-    news_items = fetch_news()
+    news_items = fetch_new_news()
 
     if not news_items:
         print("[DEBUG] Nessuna nuova news")
@@ -150,7 +115,7 @@ async def send_news():
 
     for item in news_items:
         message = (
-            f"📰 BitPath News TEST\n"
+            f"📰 BitPath News\n"
             f"{item['title']}\n"
             f"{item['summary']}\n"
             f"🕒 {item['published']}\n"
@@ -159,8 +124,12 @@ async def send_news():
 
         try:
             await bot.send_message(chat_id=CHAT_ID, text=message)
+
             sent_news.add(item["id"])
+            save_sent_news(sent_news)
+
             print(f"[SENT] {item['title']}")
+
         except Exception as e:
             print("[TELEGRAM ERROR]", e)
 
@@ -169,23 +138,12 @@ async def send_news():
 # ==============================
 async def scheduler():
 
-    # Startup
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text="🚀 Bot Economy News TEST avviato"
-        )
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text="🚀 Bot Economy News LIVE avviato"
+    )
 
-        # 🔥 Test immediato di tutti i feed
-        await test_all_feeds()
-
-        print("[DEBUG] Test feed completato")
-
-    except Exception as e:
-        print("[TELEGRAM ERROR] Startup:", e)
-
-    # ⚠️ MODALITÀ TEST:
-    # NON registriamo subito le news per vedere se funzionano
+    print("[DEBUG] Bot avviato correttamente")
 
     while True:
         try:
@@ -193,7 +151,7 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(120)  # 2 minuti per test rapido
+        await asyncio.sleep(300)  # 5 minuti
 
 # ==============================
 # MAIN
