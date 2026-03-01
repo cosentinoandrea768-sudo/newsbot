@@ -43,8 +43,7 @@ def save_sent_news(data):
     with open(STORAGE_FILE, "w") as f:
         json.dump(list(data), f)
 
-sent_news = load_sent_news()
-
+sent_news = set()  # inizialmente vuoto
 # ==============================
 # TRANSLATOR
 # ==============================
@@ -124,12 +123,9 @@ async def send_news():
 
         try:
             await bot.send_message(chat_id=CHAT_ID, text=message)
-
             sent_news.add(item["id"])
             save_sent_news(sent_news)
-
             print(f"[SENT] {item['title']}")
-
         except Exception as e:
             print("[TELEGRAM ERROR]", e)
 
@@ -143,7 +139,18 @@ async def scheduler():
         text="🚀 Bot Economy News LIVE avviato"
     )
 
-    print("[DEBUG] Bot avviato correttamente")
+    # 🔹 Inizializzazione: carica storico dal file e aggiunge feed correnti
+    sent_news.update(load_sent_news())
+    print(f"[DEBUG] Caricati {len(sent_news)} news dal file")
+
+    # 🔹 Salva ID correnti dei feed senza inviare nulla
+    for feed_url in RSS_FEEDS:
+        feed = feedparser.parse(feed_url)
+        for entry in feed.entries:
+            news_id = getattr(entry, "id", entry.link)
+            sent_news.add(news_id)
+    save_sent_news(sent_news)
+    print(f"[DEBUG] Storico iniziale registrato senza invio")
 
     while True:
         try:
