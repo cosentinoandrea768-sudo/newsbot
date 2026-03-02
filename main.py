@@ -61,8 +61,7 @@ def translate_text(text):
 RSS_FEEDS = [
     "https://www.investing.com/rss/news_14.rss",
     "https://www.investing.com/rss/news_301.rss",
-    "https://www.investing.com/rss/news_355.rss",
-    "https://www.investing.com/rss/news_357.rss",
+    "https://it.investing.com/rss/news_12.rss",
     "https://www.investing.com/rss/news_11.rss"
 ]
 
