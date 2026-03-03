@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import gc
 from flask import Flask
 from telegram import Bot
 import feedparser
@@ -32,22 +33,29 @@ def home():
 # FILE PERSISTENZA
 # ==============================
 STORAGE_FILE = "sent_news.json"
+MAX_SENT_NEWS = 200   # 🔥 limite massimo ID salvati
+INIT_FEED_LIMIT = 5   # 🔥 articoli letti per feed all'avvio
+FETCH_LIMIT = 5       # 🔥 articoli letti per feed ogni ciclo
 
 def load_sent_news():
     if os.path.exists(STORAGE_FILE):
         with open(STORAGE_FILE, "r") as f:
-            return set(json.load(f))
+            try:
+                return set(json.load(f))
+            except:
+                return set()
     return set()
 
 def save_sent_news(data):
     with open(STORAGE_FILE, "w") as f:
         json.dump(list(data), f)
 
-sent_news = set()  # inizialmente vuoto
+sent_news = set()
+
 # ==============================
 # TRANSLATOR
 # ==============================
-translator = GoogleTranslator(source='auto', target='it')
+translator = GoogleTranslator(source="auto", target="it")
 
 def translate_text(text):
     try:
@@ -74,7 +82,9 @@ def fetch_new_news():
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
 
-        for entry in feed.entries:
+        # 🔥 Limitiamo articoli per feed
+        for entry in feed.entries[:FETCH_LIMIT]:
+
             news_id = getattr(entry, "id", entry.link)
 
             if news_id in sent_news:
@@ -89,6 +99,7 @@ def fetch_new_news():
                 .replace("</p>", "")
                 .strip()
             )
+
             summary_it = translate_text(summary_text) if summary_text else ""
 
             new_items.append({
@@ -105,6 +116,8 @@ def fetch_new_news():
 # SEND NEWS
 # ==============================
 async def send_news():
+    global sent_news
+
     news_items = fetch_new_news()
 
     if not news_items:
@@ -122,34 +135,51 @@ async def send_news():
 
         try:
             await bot.send_message(chat_id=CHAT_ID, text=message)
+
             sent_news.add(item["id"])
+
+            # 🔥 Manteniamo sent_news piccolo
+            if len(sent_news) > MAX_SENT_NEWS:
+                sent_news = set(list(sent_news)[-100:])
+
             save_sent_news(sent_news)
+
             print(f"[SENT] {item['title']}")
+
         except Exception as e:
             print("[TELEGRAM ERROR]", e)
+
+    # 🔥 Forza pulizia memoria (importante su Render free)
+    gc.collect()
 
 # ==============================
 # SCHEDULER
 # ==============================
 async def scheduler():
+    global sent_news
 
     await bot.send_message(
         chat_id=CHAT_ID,
         text="🚀 Bot Economy News LIVE avviato"
     )
 
-    # 🔹 Inizializzazione: carica storico dal file e aggiunge feed correnti
+    # 🔹 Carica storico
     sent_news.update(load_sent_news())
-    print(f"[DEBUG] Caricati {len(sent_news)} news dal file")
+    print(f"[DEBUG] Caricati {len(sent_news)} ID dal file")
 
-    # 🔹 Salva ID correnti dei feed senza inviare nulla
+    # 🔹 Registra feed correnti senza invio (limitato)
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
-        for entry in feed.entries:
+        for entry in feed.entries[:INIT_FEED_LIMIT]:
             news_id = getattr(entry, "id", entry.link)
             sent_news.add(news_id)
+
+    # 🔥 Limite massimo storico
+    if len(sent_news) > MAX_SENT_NEWS:
+        sent_news = set(list(sent_news)[-100:])
+
     save_sent_news(sent_news)
-    print(f"[DEBUG] Storico iniziale registrato senza invio")
+    print("[DEBUG] Storico iniziale registrato (limitato)")
 
     while True:
         try:
