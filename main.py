@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import gc
+from datetime import date
 from flask import Flask
 from telegram import Bot
 import feedparser
@@ -30,13 +31,18 @@ def home():
     return "Bot Economy News LIVE ✅"
 
 # ==============================
-# FILE PERSISTENZA
+# COSTANTI
 # ==============================
 STORAGE_FILE = "sent_news.json"
-MAX_SENT_NEWS = 200   # 🔥 limite massimo ID salvati
-INIT_FEED_LIMIT = 5   # 🔥 articoli letti per feed all'avvio
-FETCH_LIMIT = 5       # 🔥 articoli letti per feed ogni ciclo
+DAILY_COUNTS_FILE = "daily_counts.json"
+MAX_SENT_NEWS = 200
+INIT_FEED_LIMIT = 5
+FETCH_LIMIT = 5
+DAILY_LIMIT_PER_FEED = 5  # max news al giorno per feed
 
+# ==============================
+# PERSISTENZA - NEWS GIÀ INVIATE
+# ==============================
 def load_sent_news():
     if os.path.exists(STORAGE_FILE):
         with open(STORAGE_FILE, "r") as f:
@@ -51,6 +57,40 @@ def save_sent_news(data):
         json.dump(list(data), f)
 
 sent_news = set()
+
+# ==============================
+# PERSISTENZA - CONTATORE GIORNALIERO
+# ==============================
+def load_daily_counts():
+    if os.path.exists(DAILY_COUNTS_FILE):
+        with open(DAILY_COUNTS_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except:
+                return {}
+    return {}
+
+def save_daily_counts(data):
+    with open(DAILY_COUNTS_FILE, "w") as f:
+        json.dump(data, f)
+
+def get_today():
+    return str(date.today())  # es. "2026-05-05"
+
+def can_send_from_feed(daily_counts, feed_url):
+    today = get_today()
+    entry = daily_counts.get(feed_url, {"date": "", "count": 0})
+    if entry["date"] != today:
+        return True  # nuovo giorno → resetta automaticamente
+    return entry["count"] < DAILY_LIMIT_PER_FEED
+
+def increment_feed_count(daily_counts, feed_url):
+    today = get_today()
+    entry = daily_counts.get(feed_url, {"date": "", "count": 0})
+    if entry["date"] != today:
+        daily_counts[feed_url] = {"date": today, "count": 1}
+    else:
+        daily_counts[feed_url]["count"] += 1
 
 # ==============================
 # TRANSLATOR
@@ -72,7 +112,7 @@ RSS_FEEDS = [
 ]
 
 # ==============================
-# FETCH NEW NEWS
+# FETCH NUOVE NEWS
 # ==============================
 def fetch_new_news():
     new_items = []
@@ -80,9 +120,7 @@ def fetch_new_news():
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
 
-        # 🔥 Limitiamo articoli per feed
         for entry in feed.entries[:FETCH_LIMIT]:
-
             news_id = getattr(entry, "id", entry.link)
 
             if news_id in sent_news:
@@ -97,11 +135,11 @@ def fetch_new_news():
                 .replace("</p>", "")
                 .strip()
             )
-
             summary_it = translate_text(summary_text) if summary_text else ""
 
             new_items.append({
                 "id": news_id,
+                "feed_url": feed_url,  # traccia la fonte per il limite giornaliero
                 "title": title_it,
                 "summary": summary_it,
                 "published": getattr(entry, "published", "N/A"),
@@ -111,11 +149,12 @@ def fetch_new_news():
     return new_items
 
 # ==============================
-# SEND NEWS
+# INVIO NEWS
 # ==============================
 async def send_news():
     global sent_news
 
+    daily_counts = load_daily_counts()
     news_items = fetch_new_news()
 
     if not news_items:
@@ -123,6 +162,14 @@ async def send_news():
         return
 
     for item in news_items:
+        feed_url = item["feed_url"]
+
+        # Controlla limite giornaliero per questo feed
+        if not can_send_from_feed(daily_counts, feed_url):
+            print(f"[SKIP] Limite giornaliero raggiunto per {feed_url}")
+            sent_news.add(item["id"])  # marca come visto così non ricompare
+            continue
+
         message = (
             f"📰 BitPath News\n"
             f"{item['title']}\n"
@@ -135,8 +182,9 @@ async def send_news():
             await bot.send_message(chat_id=CHAT_ID, text=message)
 
             sent_news.add(item["id"])
+            increment_feed_count(daily_counts, feed_url)
+            save_daily_counts(daily_counts)
 
-            # 🔥 Manteniamo sent_news piccolo
             if len(sent_news) > MAX_SENT_NEWS:
                 sent_news = set(list(sent_news)[-100:])
 
@@ -147,7 +195,6 @@ async def send_news():
         except Exception as e:
             print("[TELEGRAM ERROR]", e)
 
-    # 🔥 Forza pulizia memoria (importante su Render free)
     gc.collect()
 
 # ==============================
@@ -161,18 +208,17 @@ async def scheduler():
         text="🚀 Bot Economy News LIVE avviato"
     )
 
-    # 🔹 Carica storico
+    # Carica storico news già inviate
     sent_news.update(load_sent_news())
     print(f"[DEBUG] Caricati {len(sent_news)} ID dal file")
 
-    # 🔹 Registra feed correnti senza invio (limitato)
+    # Registra feed correnti senza inviare (evita flood all'avvio)
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
         for entry in feed.entries[:INIT_FEED_LIMIT]:
             news_id = getattr(entry, "id", entry.link)
             sent_news.add(news_id)
 
-    # 🔥 Limite massimo storico
     if len(sent_news) > MAX_SENT_NEWS:
         sent_news = set(list(sent_news)[-100:])
 
@@ -185,7 +231,7 @@ async def scheduler():
         except Exception as e:
             print("[LOOP ERROR]", e)
 
-        await asyncio.sleep(300)  # 5 minuti
+        await asyncio.sleep(300)  # ogni 5 minuti
 
 # ==============================
 # MAIN
